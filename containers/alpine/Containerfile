@@ -2,7 +2,7 @@
 # An Alpine image tailored for tmt test suite
 #
 
-FROM docker.io/library/alpine:3.19
+FROM docker.io/library/alpine:3.20
 
 # Inject `bash` which is unavoidably required by tmt
 RUN apk add --no-cache bash
