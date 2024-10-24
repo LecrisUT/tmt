@@ -2,12 +2,12 @@
 # See https://pre-commit.com/hooks.html for more hooks
 repos:
   - repo: https://github.com/hhatto/autopep8
-    rev: 'v2.1.0'
+    rev: 'v2.3.1'
     hooks:
       - id: autopep8
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: "v4.6.0"
+    rev: "v5.0.0"
     hooks:
       - id: check-merge-conflict
       - id: check-symlinks
@@ -21,7 +21,7 @@ repos:
       - id: trailing-whitespace
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: "v1.9.0"
+    rev: "v1.13.0"
     hooks:
       - id: mypy
         # TODO: find out how to amend mypy, pyright, pre-commit and package requirements.
@@ -65,7 +65,7 @@ repos:
         args: [--config-file=pyproject.toml]
 
   - repo: https://github.com/RobertCraigie/pyright-python
-    rev: v1.1.357
+    rev: v1.1.386
     hooks:
       - id: pyright
         # TODO: find out how to amend mypy, pyright, pre-commit and package requirements.
@@ -106,7 +106,7 @@ repos:
           - "types-docutils"
 
   - repo: https://github.com/python-jsonschema/check-jsonschema
-    rev: "0.28.1"
+    rev: "0.29.4"
     hooks:
       - id: check-metaschema
         name: "Check JSON schemas validity"
@@ -119,7 +119,7 @@ repos:
         files: ^tmt/schemas/.*\.yaml
 
   - repo: https://github.com/ansible-community/ansible-lint.git
-    rev: v24.2.1
+    rev: v24.9.2
     hooks:
       - id: ansible-lint
         args:
@@ -135,7 +135,7 @@ repos:
           # in order to be parsed by ansible-lint
 
   - repo: https://github.com/charliermarsh/ruff-pre-commit
-    rev: v0.3.5
+    rev: v0.7.1
     hooks:
       - id: ruff
         args:
@@ -143,7 +143,7 @@ repos:
           - '--show-fixes'
 
   - repo: https://github.com/teemtee/tmt.git
-    rev: 1.32.1
+    rev: 1.37.0
     hooks:
     - id: tmt-lint
       additional_dependencies:
@@ -154,7 +154,7 @@ repos:
         # There is *a lot* of them, and hatch might fetch many of them.
         - "botocore>=1.25.10"      # 1.25.10 is the current one available for RHEL9
   - repo: https://github.com/codespell-project/codespell
-    rev: v2.2.6
+    rev: v2.3.0
     hooks:
       - id: codespell
         additional_dependencies:
