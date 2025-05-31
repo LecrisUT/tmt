@@ -4,7 +4,7 @@
 # tmt/tests/alpine:latest
 #
 
-FROM docker.io/library/alpine:3.19
+FROM docker.io/library/alpine:3.22
 
 RUN <<EOF
 set -ex
