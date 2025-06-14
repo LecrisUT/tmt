@@ -89,10 +89,10 @@ all = [
     ]
 # Needed for readthedocs and man page build. Not being packaged in rpm.
 docs = [
-    "renku-sphinx-theme==0.4.0",
+    "renku-sphinx-theme==0.5.0",
     "readthedocs-sphinx-ext",
     "docutils>=0.18.1",
-    "Sphinx==7.3.7",
+    "Sphinx==8.2.3",
     "fmf>=1.7.0",
     ]
 
@@ -135,14 +135,14 @@ dependencies = [
     "pytest-container",
     "pytest-xdist",
     "requre",
-    "yq==3.1.1",
+    "yq==3.4.3",
     "pre-commit",
     # Do not install *types-click* - it's not recommended with Click 8 & newer,
     # which is the version a developer encounters given the requirements are not
     # frozen.
     "types-Markdown",
     # prevent conflict between types-requests and urllib3
-    "types-requests<2.31.0.7; python_version < '3.10'",
+    "types-requests<2.32.4.20250612; python_version < '3.10'",
     "types-requests; python_version >= '3.10'",
     "types-setuptools",
     "types-jsonschema",
