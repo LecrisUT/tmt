@@ -30,7 +30,7 @@ class Style(MetadataContainer):
         Apply this style to a given string.
         """
 
-        return _style(text, **self.dict())
+        return _style(text, **self.model_dump())
 
 
 _DEFAULT_STYLE = Style()
@@ -55,7 +55,7 @@ class Theme(MetadataContainer):
     restructuredtext_admonition_warning: Style = _DEFAULT_STYLE
 
     def to_spec(self) -> dict[str, Any]:
-        return {key.replace('_', '-'): value for key, value in self.dict().items()}
+        return {key.replace('_', '-'): value for key, value in self.model_dump().items()}
 
     def to_minimal_spec(self) -> dict[str, Any]:
         spec: dict[str, Any] = {}
@@ -73,7 +73,7 @@ class Theme(MetadataContainer):
     @classmethod
     def from_spec(cls: type['Theme'], data: Any) -> 'Theme':
         try:
-            return Theme.parse_obj(data)
+            return Theme.model_validate(data)
 
         except ValidationError as error:
             raise tmt.utils.SpecificationError("Invalid theme configuration.") from error
