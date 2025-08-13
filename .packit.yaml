@@ -17,7 +17,6 @@ srpm_build_deps:
 
 actions: &base-actions
   create-archive:
-    - hatch run docs:man
     - hatch build -t sdist
     - bash -c "ls dist/tmt-*.tar.gz"
   get-current-version:
