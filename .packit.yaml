@@ -11,17 +11,6 @@ downstream_package_name: tmt
 upstream_project_url: https://github.com/teemtee/tmt
 issue_repository: https://github.com/teemtee/tmt
 
-srpm_build_deps:
-  - hatch
-  - python3-hatch-vcs
-
-actions: &base-actions
-  create-archive:
-    - hatch build -t sdist
-    - bash -c "ls dist/tmt-*.tar.gz"
-  get-current-version:
-    - hatch version
-
 targets: &all-targets
   - fedora-all
   - epel-9

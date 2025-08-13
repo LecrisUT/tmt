@@ -134,6 +134,7 @@ package to have all available plugins ready for testing.
 %autosetup -p1 -n tmt-%{version}
 
 %generate_buildrequires
+export SETUPTOOLS_SCM_PRETEND_VERSION=%{version}
 %pyproject_buildrequires
 
 %build
