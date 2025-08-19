@@ -33,6 +33,7 @@ Table of Contents
     Examples <examples>
     Stories <stories>
     Questions <questions>
+    policies/index
     Contribute <contribute>
     Code <code/index>
     Releases <releases>
