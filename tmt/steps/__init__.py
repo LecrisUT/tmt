@@ -478,6 +478,7 @@ class WhereableStepData:
     )
 
 
+@functools.total_ordering
 class Step(
     HasRunWorkdir,
     HasStepWorkdir,
@@ -560,6 +561,28 @@ class Step(
         raw_data = self._apply_cli_invocations(raw_data)
 
         self._raw_data = raw_data
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, str):
+            if not is_step(other):
+                return False
+            return self.name == other
+        if isinstance(other, Step):
+            return self.__dict__ == other.__dict__
+        return False
+
+    def __gt__(self, other: Union[StepName, "Step"]) -> bool:
+        self_name = self.name
+        assert is_step(self_name)  # narrow type
+        if isinstance(other, str):
+            if not is_step(other):
+                raise NotImplementedError(f"Comparing with invalid step: {other}")
+            return STEPS.index(self_name) > STEPS.index(other)
+        if isinstance(other, Step):
+            other_name = other.name
+            assert is_step(other_name)  # narrow type
+            return STEPS.index(self_name) > STEPS.index(other_name)
+        raise NotImplementedError(f"Comparing with invalid type: {type(other)}")
 
     @property
     def plan_workdir(self) -> Path:
