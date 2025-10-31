@@ -4,11 +4,14 @@ from functools import cached_property
 
 from docutils import nodes
 from sphinx.domains import Domain, ObjType
+from sphinx.roles import XRefRole
 from sphinx.util import logging
 from sphinx.util.nodes import find_pending_xref_condition, make_refnode
 
 import tmt
 import tmt.log
+
+from .story import AutoStoryDirective, StoryDirective, StoryIndex
 
 if typing.TYPE_CHECKING:
     from sphinx.addnodes import pending_xref
@@ -25,10 +28,19 @@ logger = logging.getLogger(__name__)
 class TmtDomain(Domain):
     name = "tmt"
     label = "Internal tmt sphinx domain"
-    roles = {}
-    directives = {}
-    indices = []
-    object_types = {}
+    roles = {
+        "story": XRefRole(),
+    }
+    directives = {
+        "autostory": AutoStoryDirective,
+        "story": StoryDirective,
+    }
+    indices = [
+        StoryIndex,
+    ]
+    object_types = {
+        "story": ObjType("story", "story"),
+    }
     initial_data = {
         "objects": {},
         "tmt_trees": {},
