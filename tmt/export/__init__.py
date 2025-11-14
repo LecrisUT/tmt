@@ -223,7 +223,7 @@ class ExportPlugin(abc.ABC):
     @abc.abstractmethod
     def export_plan_collection(
         cls,
-        plans: list['tmt.base.core.Plan'],
+        plans: list['tmt.base.Plan'],
         keys: Optional[list[str]] = None,
         **kwargs: Any,
     ) -> str:
@@ -314,7 +314,7 @@ class TrivialExporter(ExportPlugin):
     @classmethod
     def export_plan_collection(
         cls,
-        plans: list['tmt.base.core.Plan'],
+        plans: list['tmt.base.Plan'],
         keys: Optional[list[str]] = None,
         **kwargs: Any,
     ) -> str:
