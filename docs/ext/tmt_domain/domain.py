@@ -10,6 +10,8 @@ from sphinx.util.nodes import find_pending_xref_condition, make_refnode
 import tmt
 import tmt.log
 
+from .plugin import AutoPluginDirective
+
 if typing.TYPE_CHECKING:
     from sphinx.addnodes import pending_xref
     from sphinx.builders import Builder
@@ -26,7 +28,9 @@ class TmtDomain(Domain):
     name = "tmt"
     label = "Internal tmt sphinx domain"
     roles = {}
-    directives = {}
+    directives = {
+        "autoplugin": AutoPluginDirective,
+    }
     indices = []
     object_types = {}
     initial_data = {
