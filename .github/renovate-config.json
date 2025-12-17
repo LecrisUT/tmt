@@ -3,6 +3,7 @@
   "onboarding": false,
   "platform": "github",
   "repositories": [
-    "teemtee/tmt"
+    "teemtee/tmt",
+    "LecrisUT/tmt"
   ]
 }
