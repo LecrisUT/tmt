@@ -12,5 +12,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       # TODO: Install missing system packages for python dependencies
+      - name: Get GitHub App token
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RENOVATE_BOT_APP_ID }}
+          private-key: ${{ secrets.RENOVATE_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
       - uses: renovatebot/github-action@v44.2.0
-        # TODO: Configure renovatebot
+        with:
+          token: '${{ steps.token.outputs.token }}'
