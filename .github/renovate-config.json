@@ -1,5 +1,6 @@
 {
   "configValidationError": true,
+  "dryRun": "full",
   "onboarding": false,
   "platform": "github",
   "repositories": [
