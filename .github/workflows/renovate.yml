@@ -18,6 +18,7 @@ jobs:
       # TODO: Install missing system packages for python dependencies
       - run: |
           dnf install -y \
+            podman-docker \
             libvirt-devel \
             krb5-devel \
             libpq-devel \
