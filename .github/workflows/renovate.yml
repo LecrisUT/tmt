@@ -12,17 +12,14 @@ jobs:
     env:
       LOG_LEVEL: debug
     runs-on: ubuntu-latest
-    container: fedora:latest
     steps:
       - uses: actions/checkout@v6
       # TODO: Install missing system packages for python dependencies
       - run: |
-          dnf install -y \
-            docker \
-            libvirt-devel \
-            krb5-devel \
-            libpq-devel \
-            redhat-rpm-config
+          apt install -y \
+            libvirt-dev \
+            libkrb5-dev \
+            libpq-dev
       - name: Get GitHub App token
         id: token
         uses: actions/create-github-app-token@v2
