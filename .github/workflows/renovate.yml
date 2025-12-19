@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v6
       # TODO: Install missing system packages for python dependencies
       - run: |
-          apt install -y \
+          sudo apt install -y \
             libvirt-dev \
             libkrb5-dev \
             libpq-dev
