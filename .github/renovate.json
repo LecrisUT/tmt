@@ -37,8 +37,9 @@
     },
     {
       "description": "Disable all python dependencies. Specific matchers will be used.",
+      "groupName": "Locked dependencies",
       "matchManagers": ["pep621"],
-      "enabled": false
+      "enabled": true
     },
     {
       "description": "Group documentation dependencies together",
