@@ -167,6 +167,13 @@ class BeakerLib(Library):
         The actual beakerlib fetch logic.
         """
 
+    # TODO: Move these inside the identifier
+    @abc.abstractmethod
+    def _show_ref(self) -> str:
+        """
+        Format the library name for debugging.
+        """
+
     def fetch(self) -> None:
         # Check if the library was already fetched
         # TODO: Use phase_workdir instead since this is for sure DiscoverPlugin
@@ -177,8 +184,8 @@ class BeakerLib(Library):
             # TODO: Allow conflicting libraries from dependencies
             # TODO: consider nullifying the require/recommend lists to avoid circular loops
             raise tmt.utils.GeneralError(
-                f"Library '{self.identifier}' conflicts with previously fetched "
-                f"'{cached_library.identifier}'."
+                f"Library '{self._show_ref()}' conflicts with previously fetched "
+                f"'{cached_library._show_ref()}'."
             )
 
         # Otherwise do the actual fetch and finalize the library
@@ -287,6 +294,10 @@ class BeakerLibFromUrl(BeakerLib):
             path=identifier.path,
             dest=identifier.destination or Path(DEFAULT_DESTINATION),
         )
+
+    def _show_ref(self) -> str:
+        ref_suffix = f"#{self.ref}" if self.ref else ""
+        return f"{self} ({self.url}{ref_suffix})"
 
     def _do_fetch(self, directory: Path) -> None:
         # TODO: Move this to a proper cache
@@ -449,6 +460,9 @@ class BeakerLibFromPath(BeakerLib):
             path=identifier.path,
             dest=identifier.destination or Path(DEFAULT_DESTINATION),
         )
+
+    def _show_ref(self) -> str:
+        return f"{self} ({self.path})"
 
     def _do_fetch(self, directory: Path) -> None:
         library_path = self.fmf_node_path
