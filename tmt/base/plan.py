@@ -18,7 +18,6 @@ from ruamel.yaml.error import MarkedYAMLError
 import tmt.ansible
 import tmt.export
 import tmt.lint
-import tmt.plugins.plan_shapers
 import tmt.templates
 import tmt.utils
 import tmt.utils.git
@@ -1697,9 +1696,10 @@ class Plan(
         :returns: ``True`` if the plan has been modified, ``False``
             otherwise.
         """
+        from tmt.plugins.plan_shapers import _PLAN_SHAPER_PLUGIN_REGISTRY
 
-        for shaper_id in tmt.plugins.plan_shapers._PLAN_SHAPER_PLUGIN_REGISTRY.iter_plugin_ids():
-            shaper = tmt.plugins.plan_shapers._PLAN_SHAPER_PLUGIN_REGISTRY.get_plugin(shaper_id)
+        for shaper_id in _PLAN_SHAPER_PLUGIN_REGISTRY.iter_plugin_ids():
+            shaper = _PLAN_SHAPER_PLUGIN_REGISTRY.get_plugin(shaper_id)
 
             assert shaper is not None  # narrow type
 
