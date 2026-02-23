@@ -19,14 +19,6 @@ import tmt.ansible
 import tmt.export
 import tmt.lint
 import tmt.plugins.plan_shapers
-import tmt.steps
-import tmt.steps.cleanup
-import tmt.steps.discover
-import tmt.steps.execute
-import tmt.steps.finish
-import tmt.steps.prepare
-import tmt.steps.provision
-import tmt.steps.report
 import tmt.templates
 import tmt.utils
 import tmt.utils.git
@@ -64,6 +56,8 @@ from tmt.utils import (
 if TYPE_CHECKING:
     import tmt.cli
     import tmt.log
+    from tmt.steps import Login, Phase, PluginClass, Step, StepName
+    from tmt.steps.discover import TestOrigin
 
 
 #: Filename associated with ``TMT_PLAN_SOURCE_SCRIPT``
@@ -245,7 +239,7 @@ class Plan(
     )
 
     # Optional Login instance attached to the plan for easy login in tmt try
-    login: Optional[tmt.steps.Login] = None
+    login: Optional["Login"] = None
 
     # Optional Ansible configuration for the plan
     ansible: Optional[tmt.ansible.PlanAnsible] = field(
@@ -299,6 +293,15 @@ class Plan(
         """
         Initialize the plan
         """
+
+        from tmt.steps.cleanup import Cleanup
+        from tmt.steps.discover import Discover
+        from tmt.steps.execute import Execute
+        from tmt.steps.finish import Finish
+        from tmt.steps.prepare import Prepare
+        from tmt.steps.provision import Provision
+        from tmt.steps.report import Report
+
         kwargs.setdefault('run', run)
         super().__init__(
             node=node,
@@ -342,37 +345,37 @@ class Plan(
             expand_node_data(node.data, self.fmf_context)  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
 
         # Initialize test steps
-        self.discover = tmt.steps.discover.Discover(
+        self.discover = Discover(
             logger=logger.descend(logger_name='discover'),
             plan=self,
             data=self.node.get('discover'),  # pyright: ignore[reportUnknownVariableType, reportArgumentType]
         )
-        self.provision = tmt.steps.provision.Provision(
+        self.provision = Provision(
             logger=logger.descend(logger_name='provision'),
             plan=self,
             data=self.node.get('provision'),  # pyright: ignore[reportUnknownVariableType, reportArgumentType]
         )
-        self.prepare = tmt.steps.prepare.Prepare(
+        self.prepare = Prepare(
             logger=logger.descend(logger_name='prepare'),
             plan=self,
             data=self.node.get('prepare'),  # pyright: ignore[reportUnknownVariableType, reportArgumentType]
         )
-        self.execute = tmt.steps.execute.Execute(
+        self.execute = Execute(
             logger=logger.descend(logger_name='execute'),
             plan=self,
             data=self.node.get('execute'),  # pyright: ignore[reportUnknownVariableType, reportArgumentType]
         )
-        self.report = tmt.steps.report.Report(
+        self.report = Report(
             logger=logger.descend(logger_name='report'),
             plan=self,
             data=self.node.get('report'),  # pyright: ignore[reportUnknownVariableType, reportArgumentType]
         )
-        self.finish = tmt.steps.finish.Finish(
+        self.finish = Finish(
             logger=logger.descend(logger_name='finish'),
             plan=self,
             data=self.node.get('finish'),  # pyright: ignore[reportUnknownVariableType, reportArgumentType]
         )
-        self.cleanup = tmt.steps.cleanup.Cleanup(
+        self.cleanup = Cleanup(
             logger=logger.descend(logger_name='cleanup'),
             plan=self,
             data=self.node.get('cleanup'),  # pyright: ignore[reportUnknownVariableType, reportArgumentType]
@@ -713,11 +716,12 @@ class Plan(
         """
         Edit the default template with custom values
         """
+        from tmt.steps import STEPS
 
         content = tmt.utils.yaml_to_dict(raw_content)
 
         # For each step check for possible command line data
-        for step in tmt.steps.STEPS:
+        for step in STEPS:
             options = Plan._opt(step)
             if not options:
                 continue
@@ -835,7 +839,7 @@ class Plan(
 
     def _iter_steps(
         self, enabled_only: bool = True, skip: Optional[list[str]] = None
-    ) -> Iterator[tuple[tmt.steps.StepName, tmt.steps.Step]]:
+    ) -> Iterator[tuple["StepName", "Step"]]:
         """
         Iterate over steps.
 
@@ -844,17 +848,19 @@ class Plan(
         :yields: tuple of two items, step name and corresponding instance of
             :py:class:`tmt.step.Step`.
         """
+        from tmt.steps import STEPS, Step
+
         skip = skip or []
-        for name in tmt.steps.STEPS:
+        for name in STEPS:
             if name in skip:
                 continue
-            step = cast(tmt.steps.Step, getattr(self, name))
+            step = cast(Step, getattr(self, name))
             if step.enabled or enabled_only is False:
                 yield (name, step)
 
     def steps(
         self, enabled_only: bool = True, skip: Optional[list[str]] = None
-    ) -> Iterator[tmt.steps.Step]:
+    ) -> Iterator["Step"]:
         """
         Iterate over steps.
 
@@ -867,7 +873,7 @@ class Plan(
 
     def step_names(
         self, enabled_only: bool = True, skip: Optional[list[str]] = None
-    ) -> Iterator[tmt.steps.StepName]:
+    ) -> Iterator["StepName"]:
         """
         Iterate over step names.
 
@@ -987,7 +993,7 @@ class Plan(
 
         return cast(list[dict[str, Any]], _phases)
 
-    def _lint_step_methods(self, step: str, plugin_class: tmt.steps.PluginClass) -> LinterReturn:  # pyright: ignore[reportUnknownVariableType, reportUnknownParameterType]
+    def _lint_step_methods(self, step: str, plugin_class: "PluginClass") -> LinterReturn:  # pyright: ignore[reportUnknownVariableType, reportUnknownParameterType]
         """
         P003: execute step methods must be known
         """
@@ -1020,20 +1026,22 @@ class Plan(
         """
         P003: execute step methods must be known
         """
+        from tmt.steps.execute import ExecutePlugin
 
         yield from self._lint_step_methods(
             'execute',
-            tmt.steps.execute.ExecutePlugin,  # type: ignore[type-abstract]
+            ExecutePlugin,  # type: ignore[type-abstract]
         )
 
     def lint_discover_unknown_method(self) -> LinterReturn:
         """
         P004: discover step methods must be known
         """
+        from tmt.steps.discover import DiscoverPlugin
 
         yield from self._lint_step_methods(
             'discover',
-            tmt.steps.discover.DiscoverPlugin,  # type: ignore[type-abstract]
+            DiscoverPlugin,  # type: ignore[type-abstract]
         )
 
     def lint_fmf_remote_ids_valid(self) -> LinterReturn:
@@ -1238,6 +1246,8 @@ class Plan(
         """
         Execute the plan
         """
+        from tmt.steps.discover import Discover
+
         self.header()
 
         # Additional debug info like plan environment
@@ -1284,7 +1294,7 @@ class Plan(
             for step in self.steps(skip=['cleanup']):
                 step.go()
 
-                if isinstance(step, tmt.steps.discover.Discover):
+                if isinstance(step, Discover):
                     tests = step.tests()
 
                     # Finish plan if no tests found (except dry mode)
@@ -1320,6 +1330,8 @@ class Plan(
     def _export(
         self, *, keys: Optional[list[str]] = None, include_internal: bool = False
     ) -> tmt.export._RawExportedInstance:
+        from tmt.steps import STEPS, Step
+
         data = super()._export(keys=keys, include_internal=include_internal)
 
         # TODO: `key` is pretty much `option` here, no need for `key_to_option()` call, but we
@@ -1339,8 +1351,8 @@ class Plan(
 
         data['context'] = self.fmf_context.to_spec()
 
-        for step_name in tmt.steps.STEPS:
-            step = cast(tmt.steps.Step, getattr(self, step_name))
+        for step_name in STEPS:
+            step = cast(Step, getattr(self, step_name))
 
             value = step._export(include_internal=include_internal)
             if value:
@@ -1626,6 +1638,8 @@ class Plan(
         :param tests: lists of tests to limit the new plan to.
         """
 
+        from tmt.steps import STEPS
+
         derived_plan = Plan(
             node=self.node, run=self.my_run, logger=self._logger, name=f'{self.name}.{derived_id}'
         )
@@ -1647,7 +1661,7 @@ class Plan(
         )
         derived_plan.execute.save()
 
-        for step_name in tmt.steps.STEPS:
+        for step_name in STEPS:
             getattr(derived_plan, step_name).save()
 
         return derived_plan
@@ -1670,7 +1684,7 @@ class Plan(
         for step in self.steps(enabled_only=False):
             step.prune(logger=step._logger)
 
-    def reshape(self, tests: list['tmt.steps.discover.TestOrigin']) -> bool:
+    def reshape(self, tests: list['TestOrigin']) -> bool:
         """
         Change the content of this plan by application of plan shaping plugins.
 
@@ -1706,18 +1720,21 @@ class Plan(
         return False
 
     # TODO: Make the str type-hint more narrow
-    def add_phase(self, step: Union[str, tmt.steps.Step], phase: tmt.steps.Phase) -> None:
+    def add_phase(self, step: Union[str, "Step"], phase: "Phase") -> None:
         """
         Add a phase dynamically to the current plan.
 
         :param step: The (future) step in which to add the phase.
         :param phase: The phase to add to the step.
         """
+
+        from tmt.steps import STEPS, Step
+
         if isinstance(step, str):
-            if step not in tmt.steps.STEPS:
+            if step not in STEPS:
                 raise GeneralError(f"Tried to add to an unknown step: {step}")
             step = getattr(self, step)
-        assert isinstance(step, tmt.steps.Step)
+        assert isinstance(step, Step)
         if step.plan != self:
             raise GeneralError(
                 f"Tried to add to a step belonging to a different plan: {step.plan}"
