@@ -16,7 +16,6 @@ from fmf.utils import listed  # pyright: ignore[reportUnknownVariableType]
 from ruamel.yaml.error import MarkedYAMLError
 
 import tmt.ansible
-import tmt.export
 import tmt.templates
 import tmt.utils
 import tmt.utils.git
@@ -37,6 +36,7 @@ from tmt.base.core import (
     expand_node_data,
 )
 from tmt.container import SpecBasedContainer, container, field
+from tmt.export import Exportable
 from tmt.lint import Lintable, LinterOutcome, LinterReturn
 from tmt.utils import (
     Command,
@@ -54,6 +54,7 @@ from tmt.utils import (
 if TYPE_CHECKING:
     import tmt.cli
     import tmt.log
+    from tmt.export import _RawExportedInstance
     from tmt.steps import Login, Phase, PluginClass, Step, StepName
     from tmt.steps.discover import TestOrigin
 
@@ -218,7 +219,7 @@ class Plan(
     HasPlanWorkdir,
     HasEnvironment,
     Core,
-    tmt.export.Exportable['Plan'],
+    Exportable['Plan'],
     Lintable['Plan'],
 ):
     """
@@ -1327,7 +1328,7 @@ class Plan(
 
     def _export(
         self, *, keys: Optional[list[str]] = None, include_internal: bool = False
-    ) -> tmt.export._RawExportedInstance:
+    ) -> "_RawExportedInstance":
         from tmt.steps import STEPS, Step
 
         data = super()._export(keys=keys, include_internal=include_internal)
