@@ -17,7 +17,6 @@ from ruamel.yaml.error import MarkedYAMLError
 
 import tmt.utils
 import tmt.utils.git
-import tmt.utils.jira
 from tmt._compat.pathlib import Path
 from tmt.ansible import PlanAnsible, normalize_plan_ansible
 from tmt.base.core import (
@@ -785,6 +784,7 @@ class Plan(
         """
 
         from tmt.templates import MANAGER
+        from tmt.utils.jira import link
 
         # Prepare paths
         if dry is None:
@@ -836,7 +836,7 @@ class Plan(
                 plans = Tree(path=path, logger=logger).plans(
                     names=[f"^{plan_name}$"], apply_command_line=False
                 )
-                tmt.utils.jira.link(tmt_objects=plans, links=links, logger=logger)
+                link(tmt_objects=plans, links=links, logger=logger)
 
     def _iter_steps(
         self, enabled_only: bool = True, skip: Optional[list[str]] = None
