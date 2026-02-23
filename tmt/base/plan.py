@@ -15,7 +15,6 @@ from click import echo
 from fmf.utils import listed  # pyright: ignore[reportUnknownVariableType]
 from ruamel.yaml.error import MarkedYAMLError
 
-import tmt.templates
 import tmt.utils
 import tmt.utils.git
 import tmt.utils.jira
@@ -784,6 +783,9 @@ class Plan(
         """
         Create a new plan
         """
+
+        from tmt.templates import MANAGER
+
         # Prepare paths
         if dry is None:
             dry = Plan._opt('dry', False)
@@ -791,11 +793,11 @@ class Plan(
 
         # Get plan template
         if tmt.utils.is_url(template):
-            plan_content = tmt.templates.MANAGER.render_from_url(template, logger)
+            plan_content = MANAGER.render_from_url(template, logger)
         else:
-            plan_templates = tmt.templates.MANAGER.templates['plan']
+            plan_templates = MANAGER.templates['plan']
             try:
-                plan_content = tmt.templates.MANAGER.render_file(plan_templates[template])
+                plan_content = MANAGER.render_file(plan_templates[template])
             except KeyError as error:
                 raise tmt.utils.GeneralError(f"Invalid template '{template}'.") from error
 
