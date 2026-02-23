@@ -17,7 +17,6 @@ from ruamel.yaml.error import MarkedYAMLError
 
 import tmt.ansible
 import tmt.export
-import tmt.lint
 import tmt.templates
 import tmt.utils
 import tmt.utils.git
@@ -38,7 +37,7 @@ from tmt.base.core import (
     expand_node_data,
 )
 from tmt.container import SpecBasedContainer, container, field
-from tmt.lint import LinterOutcome, LinterReturn
+from tmt.lint import Lintable, LinterOutcome, LinterReturn
 from tmt.utils import (
     Command,
     Environment,
@@ -220,7 +219,7 @@ class Plan(
     HasEnvironment,
     Core,
     tmt.export.Exportable['Plan'],
-    tmt.lint.Lintable['Plan'],
+    Lintable['Plan'],
 ):
     """
     Plan object (L2 Metadata)
