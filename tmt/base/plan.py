@@ -15,12 +15,12 @@ from click import echo
 from fmf.utils import listed  # pyright: ignore[reportUnknownVariableType]
 from ruamel.yaml.error import MarkedYAMLError
 
-import tmt.ansible
 import tmt.templates
 import tmt.utils
 import tmt.utils.git
 import tmt.utils.jira
 from tmt._compat.pathlib import Path
+from tmt.ansible import PlanAnsible, normalize_plan_ansible
 from tmt.base.core import (
     DEFAULT_ORDER,
     EXTRA_KEYS_PREFIX,
@@ -241,9 +241,9 @@ class Plan(
     login: Optional["Login"] = None
 
     # Optional Ansible configuration for the plan
-    ansible: Optional[tmt.ansible.PlanAnsible] = field(
+    ansible: Optional[PlanAnsible] = field(
         default=None,
-        normalize=tmt.ansible.normalize_plan_ansible,
+        normalize=normalize_plan_ansible,
         exporter=lambda value: value.to_spec() if value else None,
     )
 
