@@ -14,7 +14,7 @@ from uuid import UUID
 import fmf.utils
 from click import echo
 
-import tmt.base
+import tmt.base.core
 import tmt.export
 import tmt.identifier
 import tmt.log
@@ -1152,7 +1152,7 @@ def read_nitrate_case(
     if relevancy:
         data['adjust'] = relevancy_to_adjust(relevancy, logger)
         echo(style('adjust:', fg='green'))
-        echo(tmt.utils.dict_to_yaml(data['adjust']).strip())
+        echo(tmt.utils.to_yaml(data['adjust']).strip())
 
     # Extend bugs detected from Makefile with those linked in Nitrate
     try:
@@ -1249,13 +1249,13 @@ def write(path: Path, data: NitrateDataType, quiet: bool = False) -> None:
         'extra-pepa',
     ]
     sorted_data = {}
-    for key in tmt.base.Test._keys() + extra_keys:
+    for key in tmt.base.core.Test._keys() + extra_keys:
         with suppress(KeyError):
             sorted_data[key] = data[key]
 
     # Store metadata into a fmf file
     try:
-        path.write_text(tmt.utils.dict_to_yaml(sorted_data), encoding='utf-8')
+        path.write_text(tmt.utils.to_yaml(sorted_data), encoding='utf-8')
 
     except OSError as error:
         raise ConvertError(f"Unable to write '{path}'") from error

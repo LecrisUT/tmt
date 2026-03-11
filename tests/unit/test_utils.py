@@ -16,7 +16,6 @@ import fmf
 import pytest
 
 import tmt
-import tmt.config
 import tmt.log
 import tmt.plugins
 import tmt.steps.discover
@@ -480,7 +479,8 @@ class TestStructuredField(unittest.TestCase):
         """
 
         text = "\n".join([self.header, self.sections, self.footer])
-        pytest.raises(StructuredFieldError, StructuredField, text, 0)
+        with pytest.raises(StructuredFieldError):
+            StructuredField(text, 0)
 
     def test_broken_field(self):
         """
@@ -488,7 +488,8 @@ class TestStructuredField(unittest.TestCase):
         """
 
         text = "[structured-field-start]"
-        pytest.raises(StructuredFieldError, StructuredField, text)
+        with pytest.raises(StructuredFieldError):
+            StructuredField(text)
 
     def test_set_content(self):
         """
@@ -689,7 +690,8 @@ class TestStructuredField(unittest.TestCase):
         # Remove multiple values
         field.remove("section", "key")
         assert 'key = 1\nkey = 2\nkey = 3' not in field.save()
-        pytest.raises(StructuredFieldError, field.get, "section", "key")
+        with pytest.raises(StructuredFieldError):
+            field.get("section", "key")
 
 
 def test_run_interactive_not_joined(tmppath, root_logger):
@@ -770,7 +772,7 @@ def test_command_run_without_streaming(root_logger: Logger, caplog) -> None:
         cwd=Path.cwd(), stream_output=True, logger=root_logger
     )
 
-    assert_log(caplog, message=MATCH('out: drwx.+? mnt'))
+    assert_log(caplog, message=MATCH('stdout: drwx.+? mnt'))
 
     caplog.clear()
 
@@ -778,7 +780,7 @@ def test_command_run_without_streaming(root_logger: Logger, caplog) -> None:
         cwd=Path.cwd(), stream_output=False, logger=root_logger
     )
 
-    assert_not_log(caplog, message=MATCH('out: drwx.+? mnt'))
+    assert_not_log(caplog, message=MATCH('stdout: drwx.+? mnt'))
 
     caplog.clear()
 
@@ -787,8 +789,8 @@ def test_command_run_without_streaming(root_logger: Logger, caplog) -> None:
             cwd=Path.cwd(), stream_output=False, logger=root_logger
         )
 
-    assert_log(caplog, message=MATCH('out: drwx.+? mnt'))
-    assert_log(caplog, message=MATCH("err: ls: cannot access '/does/not/exist'"))
+    assert_log(caplog, message=MATCH('stdout: drwx.+? mnt'))
+    assert_log(caplog, message=MATCH("stderr: ls: cannot access '/does/not/exist'"))
 
 
 def test_get_distgit_handler():
@@ -1679,13 +1681,13 @@ class TestJiraLink(unittest.TestCase):
                     token: secret
             """.strip()
         self.config_tree = fmf.Tree(data=tmt.utils.yaml_to_dict(config_yaml))
-        tmt.base.Test.create(
+        tmt.base.core.Test.create(
             names=['tmp/test'], template='shell', path=self.tmp, logger=self.logger
         )
-        tmt.base.Plan.create(
+        tmt.base.plan.Plan.create(
             names=['tmp/plan'], template='mini', path=self.tmp, logger=self.logger
         )
-        tmt.base.Story.create(
+        tmt.base.core.Story.create(
             names=['tmp/story'], template='mini', path=self.tmp, logger=self.logger
         )
 
@@ -1700,7 +1702,7 @@ class TestJiraLink(unittest.TestCase):
         test = tmt.Tree(logger=self.logger, path=self.tmp).tests(names=['tmp/test'])[0]
         tmt.utils.jira.link(
             tmt_objects=[test],
-            links=tmt.base.Links(data=['verifies:https://issues.redhat.com/browse/TT-262']),
+            links=tmt.base.core.Links(data=['verifies:https://issues.redhat.com/browse/TT-262']),
             logger=self.logger,
         )
         result = mock_add_simple_link.call_args.args[1]
@@ -1718,7 +1720,7 @@ class TestJiraLink(unittest.TestCase):
         story = tmt.Tree(logger=self.logger, path=self.tmp).stories(names=['tmp'])[0]
         tmt.utils.jira.link(
             tmt_objects=[test, plan, story],
-            links=tmt.base.Links(data=['verifies:https://issues.redhat.com/browse/TT-262']),
+            links=tmt.base.core.Links(data=['verifies:https://issues.redhat.com/browse/TT-262']),
             logger=self.logger,
         )
         result = mock_add_simple_link.call_args.args[1]
@@ -1743,7 +1745,7 @@ class TestJiraLink(unittest.TestCase):
         test = tmt.Tree(logger=self.logger, path=self.tmp).tests(names=['tmp/test'])[0]
         tmt.utils.jira.link(
             tmt_objects=[test],
-            links=tmt.base.Links(data=['verifies:https://issues.redhat.com/browse/TT-262']),
+            links=tmt.base.core.Links(data=['verifies:https://issues.redhat.com/browse/TT-262']),
             logger=self.logger,
         )
         # Load the test object again with the link present

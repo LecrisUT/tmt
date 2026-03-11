@@ -2,71 +2,69 @@
 Artifact provider for discovering RPMs from repository files.
 """
 
-import re
 from collections.abc import Sequence
+from functools import cached_property
 from re import Pattern
 from typing import Optional
+from urllib.parse import urlparse
 
 import tmt.log
+import tmt.utils
+from tmt.guest import Guest
 from tmt.steps import DefaultNameGenerator
-from tmt.steps.prepare.artifact import RpmArtifactInfo
 from tmt.steps.prepare.artifact.providers import (
+    ArtifactInfo,
     ArtifactProvider,
     ArtifactProviderId,
     Repository,
     provides_artifact_provider,
 )
-from tmt.steps.provision import Guest
-from tmt.utils import GeneralError, Path, PrepareError, RunError
+from tmt.utils import Path, PrepareError, RunError
 
 # Counter for generating unique repository names in the format ``tmt-repo-default-{n}``.
 _REPO_NAME_GENERATOR = DefaultNameGenerator(known_names=[])
 
 
-# ignore[type-arg]: TypeVar in provider registry annotations is
-# puzzling for type checkers. And not a good idea in general, probably.
-@provides_artifact_provider('repository-url')  # type: ignore[arg-type]
-class RepositoryFileProvider(ArtifactProvider[RpmArtifactInfo]):
+@provides_artifact_provider('repository-file')
+class RepositoryFileProvider(ArtifactProvider):
     """
     Provider for making RPM artifacts from a repository discoverable without downloading them.
 
-    The provider identifier should start with 'repository-url:' followed by a URL to a .repo file,
-    e.g., "repository-url:https://download.docker.com/linux/centos/docker-ce.repo".
+    The provider identifier should start with 'repository-file:' followed by a URL to a .repo file,
+    e.g., "repository-file:https://download.docker.com/linux/centos/docker-ce.repo".
 
     The provider downloads the .repo file to the guest's ``/etc/yum.repos.d/`` directory,
     and lists RPMs available in the defined repositories without downloading them, acting as a
     discovery-only provider. Artifacts are all available RPM packages listed in the repository.
 
-    :param raw_provider_id: The full provider identifier, starting with 'repository-url:'.
+    :param raw_id: The full provider identifier, starting with 'repository-file:'.
     :param logger: Logger instance for outputting messages.
     :raises GeneralError: If the .repo file URL is invalid.
     """
 
     repository: Repository
 
-    def __init__(self, raw_provider_id: str, logger: tmt.log.Logger):
-        super().__init__(raw_provider_id, logger)
+    def __init__(self, raw_id: str, repository_priority: int, logger: tmt.log.Logger):
+        super().__init__(raw_id, repository_priority, logger)
 
     @classmethod
-    def _extract_provider_id(cls, raw_provider_id: str) -> ArtifactProviderId:
-        prefix = 'repository-url:'
-        if not raw_provider_id.startswith(prefix):
-            raise ValueError(f"Invalid repository provider format: '{raw_provider_id}'.")
-        value = raw_provider_id[len(prefix) :]
+    def _extract_provider_id(cls, raw_id: str) -> ArtifactProviderId:
+        prefix = 'repository-file:'
+        if not raw_id.startswith(prefix):
+            raise ValueError(f"Invalid repository provider format: '{raw_id}'.")
+        value = raw_id[len(prefix) :]
         if not value:
             raise ValueError("Missing repository URL.")
         return value
 
-    @property
-    def artifacts(self) -> Sequence[RpmArtifactInfo]:
+    @cached_property
+    def artifacts(self) -> Sequence[ArtifactInfo]:
         # Repository provider does not enumerate individual artifacts.
         # The repository is installed and packages are available through the package manager.
         # There is no need to download individual artifact files.
         return []
 
-    def _download_artifact(
-        self, artifact: RpmArtifactInfo, guest: Guest, destination: Path
-    ) -> None:
+    def _download_artifact(self, artifact: ArtifactInfo, guest: Guest, destination: Path) -> None:
         """This provider only discovers repos; it does not download individual RPMs."""
         raise AssertionError(
             "RepositoryFileProvider does not support downloading individual RPMs."
@@ -85,8 +83,21 @@ class RepositoryFileProvider(ArtifactProvider[RpmArtifactInfo]):
         # It returns an Empty list, as no individual artifact files are downloaded.
 
         self.logger.info(f"Initializing repository provider with URL: {self.id}")
-        # TODO: This should not be using Repository.from_url
-        self.repository = Repository.from_url(url=self.id, logger=self.logger)
+
+        parsed = urlparse(self.id)
+        if parsed.scheme == 'file':
+            # Read .repo file from the local (controller) filesystem.
+            self.logger.info(f"Reading repository file from local path: {parsed.path}")
+            self.logger.debug(
+                f"Absolute path of the repository file: '{Path(parsed.path).resolve()}'"
+            )
+            self.repository = Repository.from_file_path(
+                file_path=Path(parsed.path), logger=self.logger
+            )
+        else:
+            # TODO: This should not be using Repository.from_url
+            self.repository = Repository.from_url(url=self.id, logger=self.logger)
+
         self.logger.info(
             f"Repository initialized: {self.repository.name} "
             f"(repo IDs: {', '.join(self.repository.repo_ids)})"
@@ -98,76 +109,12 @@ class RepositoryFileProvider(ArtifactProvider[RpmArtifactInfo]):
         return [self.repository]
 
 
-# FIXME: Make this function more robust. The current regex-based parsing
-# is a "happy path" implementation and will fail on complex or
-# unusually-named packages. This is acceptable for now but should
-# be hardened later
-# Regex to parse N-E:V-R.A format.
-# Groups: 1:Name, 3:Epoch (optional), 4:Version, 5:Release, 6:Arch
-_PKG_REGEX = re.compile(
-    r"""
-    ^                                   # must match the whole string
-    (?P<name>[^:]+)                     # Name (one or more characters except colon)
-    -                                   # literal hyphen
-    ((?P<epoch>\d+):)?                  # optional group: epoch (one or more digits)
-                                        # followed by colon
-    (?P<version>[^-:]*\d[^-:]*)         # Version (zero or more non-hyphen/colon,
-                                        # at least one digit, zero or more non-hyphen/colon)
-    -                                   # literal hyphen
-    (?P<release>[^-]+)                  # Release (one or more non-hyphen characters)
-    \.                                  # literal dot
-    (?P<arch>[^.]+)                     # Arch (one or more non-dot characters)
-    """,
-    re.VERBOSE,
-)
-
-
-def parse_rpm_string(pkg_string: str) -> dict[str, str]:
-    """
-    Parses a full RPM package string (N-E:V-R.A) into its components.
-
-    :param pkg_string: The package string, e.g., "docker-ce-1:20.10.7-3.el8.x86_64".
-    :raises ValueError: if the package string is malformed.
-    :return: A dictionary of RPM components.
-    """
-
-    # 1. Match the package string against the regex
-    match = _PKG_REGEX.fullmatch(pkg_string)
-
-    if not match:
-        raise ValueError(f"String '{pkg_string}' does not match N-E:V-R.A format")
-
-    # 2. Extract the named parts
-    # Non-optional groups are guaranteed to be strings.
-    name = match.group('name')
-    version = match.group('version')
-    release = match.group('release')
-    arch = match.group('arch')
-
-    # Optional epoch group can be None
-    epoch = match.group('epoch')
-    if epoch is None:
-        epoch = '0'
-
-    # Reconstruct NVR (Name-Version-Release)
-    nvr = f"{name}-{version}-{release}"
-
-    return {
-        'name': name,
-        'epoch': epoch,
-        'version': version,
-        'release': release,
-        'arch': arch,
-        'nvr': nvr,
-    }
-
-
 def create_repository(
     artifact_dir: Path,
     guest: Guest,
     logger: tmt.log.Logger,
+    priority: int,
     repo_name: Optional[str] = None,
-    priority: int = 1,
 ) -> Repository:
     """
     Create a local RPM repository from a directory on the guest.
@@ -181,7 +128,7 @@ def create_repository(
     :param logger: Logger instance for outputting debug and error messages.
     :param repo_name: Name for the repository. If not provided, generates a unique
         name using the format ``tmt-repo-default-{n}``.
-    :param priority: Repository priority (default: 1). Lower values have higher priority.
+    :param priority: Repository priority. Lower values have higher priority.
     :returns: Repository object representing the newly created repository.
     :raises PrepareError: If the package manager does not support creating repositories
         or if metadata creation fails.

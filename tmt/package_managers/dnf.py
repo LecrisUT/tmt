@@ -1,5 +1,5 @@
 import re
-from typing import TYPE_CHECKING, Any, Optional, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Optional, cast
 
 from tmt._compat.pathlib import Path
 from tmt.package_managers import (
@@ -23,7 +23,10 @@ if TYPE_CHECKING:
 else:
     Repository: Any = None  # type: ignore[assignment]
 
-from tmt.utils import Command, GeneralError, RunError, ShellScript
+from tmt.utils import Command, CommandOutput, GeneralError, PrepareError, RunError, ShellScript
+
+COPR_URL = 'https://copr.fedorainfracloud.org/coprs'
+COPR_REPO_PATTERN = re.compile(r'^(@)?([^/]+)/([^/]+)$')
 
 
 class DnfEngine(PackageManagerEngine):
@@ -153,17 +156,26 @@ class DnfEngine(PackageManagerEngine):
         *installables: Installable,
         options: Optional[Options] = None,
     ) -> ShellScript:
-        # Make sure debuginfo-install is present on the target system
-        script = self.install(FileSystemPath('/usr/bin/debuginfo-install'))
-
         options = options or Options()
 
-        script &= cast(  # type: ignore[redundant-cast]
-            ShellScript,
-            self._construct_install_debuginfo_script(  # type: ignore[reportGeneralIssues,unused-ignore]
-                *installables, options=options
-            ),
-        )
+        # Make sure debuginfo-install is present on the target system
+        if self._base_debuginfo_command == Command('debuginfo-install'):
+            script = self.install(FileSystemPath('/usr/bin/debuginfo-install'))
+
+            script &= cast(  # type: ignore[redundant-cast]
+                ShellScript,
+                self._construct_install_debuginfo_script(  # type: ignore[reportGeneralIssues,unused-ignore]
+                    *installables, options=options
+                ),
+            )
+
+        else:
+            script = cast(  # type: ignore[redundant-cast]
+                ShellScript,
+                self._construct_install_debuginfo_script(  # type: ignore[reportGeneralIssues,unused-ignore]
+                    *installables, options=options
+                ),
+            )
 
         # Extra ignore/check for yum to workaround BZ#1920176
         if not options.skip_missing:
@@ -201,13 +213,22 @@ class DnfEngine(PackageManagerEngine):
         return ShellScript(f"createrepo {directory}")
 
 
-# ignore[type-arg]: TypeVar in package manager registry annotations is
-# puzzling for type checkers. And not a good idea in general, probably.
-@provides_package_manager('dnf')  # type: ignore[arg-type]
+@provides_package_manager('dnf')
 class Dnf(PackageManager[DnfEngine]):
     NAME = 'dnf'
 
     _engine_class = DnfEngine
+
+    #: Package name of the COPR plugin for this package manager.
+    copr_plugin: ClassVar[str] = 'dnf-plugins-core'
+
+    # Compiled regex patterns for DNF/YUM error messages
+    _FAILED_PACKAGE_INSTALLATION_PATTERNS = [
+        re.compile(r'Unable to find a match:\s+([^\s\n]+)', re.IGNORECASE),
+        re.compile(r'No match for argument:\s+([^\s\n]+)', re.IGNORECASE),
+        re.compile(r'No package\s+([^\s\n]+)\s+available', re.IGNORECASE),
+        re.compile(r'Could not find a package for:\s*([^\s]+)', re.IGNORECASE),
+    ]
 
     bootc_builder = True
 
@@ -260,19 +281,107 @@ class Dnf(PackageManager[DnfEngine]):
 
         return results
 
+    def _enable_copr_epel6(self, copr: str) -> None:
+        """
+        Manually enable copr repositories for epel6
+        """
+
+        # Parse the copr repo name
+        matched = COPR_REPO_PATTERN.match(copr)
+        if not matched:
+            raise PrepareError(f"Invalid copr repository '{copr}'.")
+        group, name, project = matched.groups()
+        group = 'group_' if group else ''
+        # Prepare the repo file url
+        parts = [COPR_URL] + (['g'] if group else [])
+        parts += [name, project, 'repo', 'epel-6']
+        parts += [f"{group}{name}-{project}-epel-6.repo"]
+        url = '/'.join(parts)
+        # Download the repo file on guest
+        try:
+            self.guest.execute(
+                Command('curl', '-LOf', url),
+                cwd=Path('/etc/yum.repos.d'),
+                silent=True,
+            )
+        except RunError as error:
+            if error.stderr and 'not found' in error.stderr.lower():
+                raise PrepareError(f"Copr repository '{copr}' not found.") from error
+            raise
+
+    def enable_copr(self, *repositories: str) -> None:
+        """
+        Enable requested copr repositories
+        """
+
+        if not repositories:
+            return
+
+        # Try to install copr plugin
+        self.debug('Make sure the copr plugin is available.')
+        try:
+            self.install(Package(self.copr_plugin))
+
+        # Enable repositories manually for epel6
+        except RunError:
+            for repository in repositories:
+                self.info('copr', repository, 'green')
+                self._enable_copr_epel6(repository)
+
+        # Enable repositories using copr plugin
+        else:
+            for repository in repositories:
+                self.info('copr', repository, 'green')
+                self.guest.execute(
+                    ShellScript(
+                        f"{self.engine.command.to_script()} copr "
+                        f"{self.engine.options.to_script()} enable -y {repository}"
+                    )
+                )
+
+    def install_local(
+        self,
+        *installables: Installable,
+        options: Optional[Options] = None,
+    ) -> CommandOutput:
+
+        options = options or Options()
+        options.check_first = False
+        # Use both install/reinstall to get all packages refreshed
+        # FIXME Simplify this once BZ#1831022 is fixed/implemented.
+        output = self.install(*installables, options=options)
+        self.reinstall(*installables, options=options)
+        return output
+
+    def install_debuginfo(
+        self,
+        *installables: Installable,
+        options: Optional[Options] = None,
+    ) -> CommandOutput:
+
+        output = super().install_debuginfo(*installables, options=options)
+
+        # Check the packages are installed because 'debuginfo-install'
+        # returns 0 even though it didn't manage to install the required packages
+        if not (options and options.skip_missing):
+            self.check_presence(*[Package(f'{p}-debuginfo') for p in installables])
+        return output
+
 
 class Dnf5Engine(DnfEngine):
     _base_command = Command('dnf5')
+    _base_debuginfo_command = Command('dnf5', 'debuginfo-install')
     skip_missing_packages_option = '--skip-unavailable'
+    skip_missing_debuginfo_option = skip_missing_packages_option
 
 
-# ignore[type-arg]: TypeVar in package manager registry annotations is
-# puzzling for type checkers. And not a good idea in general, probably.
-@provides_package_manager('dnf5')  # type: ignore[arg-type]
+@provides_package_manager('dnf5')
 class Dnf5(Dnf):
     NAME = 'dnf5'
 
     _engine_class = Dnf5Engine
+
+    copr_plugin: ClassVar[str] = 'dnf5-command(copr)'
 
     probe_command = Command('dnf5', '--version')
     probe_priority = 60
@@ -341,13 +450,13 @@ class YumEngine(DnfEngine):
         return ShellScript(f'{self.command.to_script()} makecache')
 
 
-# ignore[type-arg]: TypeVar in package manager registry annotations is
-# puzzling for type checkers. And not a good idea in general, probably.
-@provides_package_manager('yum')  # type: ignore[arg-type]
+@provides_package_manager('yum')
 class Yum(Dnf):
     NAME = 'yum'
 
     _engine_class = YumEngine
+
+    copr_plugin: ClassVar[str] = 'yum-plugin-copr'
 
     bootc_builder = False
 

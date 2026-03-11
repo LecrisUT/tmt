@@ -284,6 +284,13 @@ easily inside a container::
     podman run -it --rm quay.io/teemtee/tmt bash
     podman run -it --rm quay.io/teemtee/tmt-all bash
 
+The official tmt container images include `tini <https://github.com/krallin/tini>`_
+as an init process to properly handle signals and reap zombie processes.
+If you are using a custom container image without a built-in init, use
+the ``--init`` flag to prevent zombie processes::
+
+    podman run --init -it --rm your-custom-image bash
+
 .. _pip_install:
 
 When installing using ``pip`` you might need to install additional
@@ -522,6 +529,24 @@ TMT_CONNECT_TIMEOUT
 TMT_REBOOT_TIMEOUT
     How many seconds to wait for a connection to succeed after
     guest reboot. By default, it is 10 minutes.
+
+TMT_RETRY_SESSION_RETRIES
+    The number of retries for HTTP/HTTPS requests when encountering
+    retriable errors (such as 503 Service Unavailable). By default,
+    8 retries are attempted.
+
+TMT_RETRY_SESSION_BACKOFF_FACTOR
+    The exponential backoff factor for retrying HTTP/HTTPS requests.
+    The wait time between retries is calculated as
+    ``{backoff_factor} * (2 ** (retry_number - 1))`` seconds, up to
+    ``TMT_RETRY_SESSION_BACKOFF_MAX``. For example, with a backoff
+    factor of 2.0, 8 retries and a maximum backoff of 120s, the delays
+    are: 2s, 4s, 8s, 16s, 32s, 64s, 120s, 120s. By default, the backoff
+    factor is 2.0.
+
+TMT_RETRY_SESSION_BACKOFF_MAX
+    The maximum retry wait time between retrying HTTP/HTTPS requests.
+    By default, the maximum is 120s.
 
 TMT_SCRIPTS_DIR
     Destination directory for storing ``tmt`` scripts on the guest.
@@ -900,7 +925,7 @@ Koscielniak, Han Han, Luigi Pellecchia, Siteshwar Vashisht,
 Chris Kyrouac, Xiaofeng Wang, Coiby Xu, Michal Pospíšil, Wayne
 Sun, Evgeni Vakhonin, Mike Stowell, Therese Cornell, Mingyu Shi,
 Conor Tull, Athrey Vinay, David Pascual, Vaibhav D. Aren, Qin
-Yuan, Thiébaud Weksteen and Nisha Saini.
+Yuan, Thiébaud Weksteen, Nisha Saini and Yaakov Selkowitz.
 
 
 Copyright

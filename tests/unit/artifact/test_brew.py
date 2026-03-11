@@ -1,7 +1,6 @@
 import pytest
 
 from tmt.steps.prepare.artifact.providers.brew import BrewArtifactProvider, BrewBuild, BrewTask
-from tmt.utils import GeneralError
 
 from . import (
     MOCK_BUILD_ID_KOJI_BREW,
@@ -37,8 +36,10 @@ def test_brew_valid_draft_build(mock_brew, mock_call_api, artifact_provider):
         }
         for i in range(2)
     ]
-    mock_call_api.side_effect = (
-        lambda method, *a, **kw: mock_rpms if method == "listBuildRPMs" else {"id": draft_id}
+    mock_call_api.side_effect = lambda method, *a, **kw: (
+        mock_rpms
+        if method == "listBuildRPMs"
+        else {"id": draft_id, "package_name": "test-package"}
     )
 
     provider = artifact_provider(f"brew.build:{draft_id}")
@@ -53,7 +54,6 @@ def test_brew_valid_task_id_scratch_build(mock_brew, mock_call_api, artifact_pro
 
     provider = artifact_provider(f"brew.task:{task_id}")
     assert isinstance(provider, BrewTask)
-    provider._top_url = "http://brew.example.com"
     tasks = list(provider._get_task_children(task_id))
 
     assert len(tasks) == 2

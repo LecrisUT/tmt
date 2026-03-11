@@ -2,21 +2,21 @@ import re
 from re import Pattern
 from typing import TYPE_CHECKING, Optional
 
+import tmt.guest
 import tmt.log
-import tmt.steps.provision
 import tmt.utils
 import tmt.utils.themes
 from tmt.checks import Check, CheckEvent, CheckPlugin, _RawCheck, provides_check
 from tmt.container import container, field
+from tmt.guest import GuestCapability
 from tmt.result import CheckResult, ResultOutcome, save_failures
-from tmt.steps.provision import GuestCapability
 from tmt.utils import Path, Stopwatch
 from tmt.utils.hints import hints_as_notes
 
 if TYPE_CHECKING:
-    import tmt.base
+    import tmt.base.core
+    from tmt.guest import Guest
     from tmt.steps.execute import TestInvocation
-    from tmt.steps.provision import Guest
 
 TEST_POST_DMESG_FILENAME = 'dmesg-{event}.txt'
 
@@ -68,7 +68,7 @@ class DmesgCheck(Check):
     @classmethod
     def _fetch_dmesg(
         cls,
-        guest: tmt.steps.provision.Guest,
+        guest: tmt.guest.Guest,
         logger: tmt.log.Logger,
     ) -> tmt.utils.CommandOutput:
         def _test_output_logger(
@@ -78,9 +78,16 @@ class DmesgCheck(Check):
             shift: int = 2,
             level: int = 3,
             topic: Optional[tmt.log.Topic] = None,
+            stacklevel: int = 1,
         ) -> None:
             logger.verbose(
-                key=key, value=value, color=color, shift=shift, level=level, topic=topic
+                key=key,
+                value=value,
+                color=color,
+                shift=shift,
+                level=level,
+                topic=topic,
+                stacklevel=stacklevel + 1,
             )
 
         script = tmt.utils.ShellScript(f'{guest.facts.sudo_prefix} dmesg')
@@ -187,16 +194,16 @@ class Dmesg(CheckPlugin[DmesgCheck]):
     def essential_requires(
         cls,
         guest: 'Guest',
-        test: 'tmt.base.Test',
+        test: 'tmt.base.core.Test',
         logger: tmt.log.Logger,
-    ) -> list['tmt.base.DependencySimple']:
+    ) -> list['tmt.base.core.DependencySimple']:
         if not guest.facts.has_capability(GuestCapability.SYSLOG_ACTION_READ_ALL):
             return []
 
         # Avoid circular imports
-        import tmt.base
+        import tmt.base.core
 
-        return [tmt.base.DependencySimple('/usr/bin/dmesg')]
+        return [tmt.base.core.DependencySimple('/usr/bin/dmesg')]
 
     @classmethod
     def before_test(

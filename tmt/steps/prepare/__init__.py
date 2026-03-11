@@ -2,16 +2,14 @@ import copy
 from typing import TYPE_CHECKING, Any, Literal, Optional, TypeVar, cast
 
 import click
-import fmf
 import fmf.utils
 
 import tmt
 import tmt.log
 import tmt.steps
-import tmt.steps.discover
-import tmt.steps.provision
 import tmt.utils
 from tmt.container import container, simple_field
+from tmt.guest import Guest
 from tmt.options import option
 from tmt.plugins import PluginRegistry
 from tmt.result import PhaseResult, ResultGuestData, ResultOutcome
@@ -24,13 +22,12 @@ from tmt.steps import (
     PushTask,
     sync_with_guests,
 )
-from tmt.steps.provision import Guest
 from tmt.utils import uniq
 
 if TYPE_CHECKING:
-    import tmt.base
+    import tmt.base.core
     import tmt.cli
-    from tmt.base import Plan
+    from tmt.base.plan import Plan
 
 
 @container
@@ -90,7 +87,7 @@ class PreparePlugin(tmt.steps.Plugin[PrepareStepDataT, PluginOutcome]):
     def go(
         self,
         *,
-        guest: 'tmt.steps.provision.Guest',
+        guest: 'tmt.guest.Guest',
         environment: Optional[tmt.utils.Environment] = None,
         logger: tmt.log.Logger,
     ) -> PluginOutcome:
@@ -131,14 +128,14 @@ class DependencyCollection:
     # first, but when grouping guests by same requirements, we'd start
     # adding guests to the list when spotting same set of dependencies.
     guests: list[Guest]
-    dependencies: list['tmt.base.DependencySimple'] = simple_field(default_factory=list)
+    dependencies: list['tmt.base.core.DependencySimple'] = simple_field(default_factory=list)
 
     @property
     def as_key(self) -> 'DependencyCollectionKey':
         return frozenset(self.dependencies)
 
 
-DependencyCollectionKey = frozenset['tmt.base.DependencySimple']
+DependencyCollectionKey = frozenset['tmt.base.core.DependencySimple']
 
 
 class Prepare(tmt.steps.Step):
@@ -235,7 +232,7 @@ class Prepare(tmt.steps.Step):
             self.actions()
             return
 
-        import tmt.base
+        import tmt.base.core
 
         # All phases from all steps.
         phases = [
@@ -283,7 +280,7 @@ class Prepare(tmt.steps.Step):
 
                 collected_essential_requires[
                     guest
-                ].dependencies += tmt.base.assert_simple_dependencies(
+                ].dependencies += tmt.base.core.assert_simple_dependencies(
                     # ignore[attr-defined]: mypy thinks that phase is Phase type, while its
                     # actually PluginClass
                     phase.essential_requires(),  # type: ignore[attr-defined]
@@ -303,13 +300,15 @@ class Prepare(tmt.steps.Step):
                 if not test.enabled_on_guest(guest):
                     continue
 
-                collected_requires[guest].dependencies += tmt.base.assert_simple_dependencies(
+                collected_requires[guest].dependencies += tmt.base.core.assert_simple_dependencies(
                     test.require,
                     'After beakerlib processing, tests may have only simple requirements',
                     self._logger,
                 )
 
-                collected_recommends[guest].dependencies += tmt.base.assert_simple_dependencies(
+                collected_recommends[
+                    guest
+                ].dependencies += tmt.base.core.assert_simple_dependencies(
                     test.recommend,
                     'After beakerlib processing, tests may have only simple requirements',
                     self._logger,
@@ -503,6 +502,10 @@ class Prepare(tmt.steps.Step):
                 'prepare step failed',
                 causes=exceptions,
             )
+
+        # Notify guests that the prepare step has completed.
+        for guest in guest_copies:
+            guest.on_step_complete(self)
 
         self.info('')
 

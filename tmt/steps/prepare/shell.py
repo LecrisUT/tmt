@@ -1,18 +1,16 @@
 import threading
 from typing import Any, Optional, cast
 
-import fmf
 import fmf.utils
 
-import tmt
 import tmt.log
 import tmt.steps
 import tmt.steps.prepare
 import tmt.utils
 import tmt.utils.git
 from tmt.container import container, field
+from tmt.guest import DEFAULT_PULL_OPTIONS, Guest, TransferOptions
 from tmt.steps import safe_filename
-from tmt.steps.provision import DEFAULT_PULL_OPTIONS, Guest, TransferOptions
 from tmt.utils import Command, EnvVarValue, ShellScript, Stopwatch
 
 PREPARE_WRAPPER_FILENAME = 'tmt-prepare-wrapper.sh'
@@ -67,7 +65,7 @@ class PrepareShell(tmt.steps.prepare.PreparePlugin[PrepareShellData]):
     Prepare guest using shell (Bash) scripts.
 
     Default shell options are applied to the script, see the
-    :ref:`/spec/tests/test` key specification for more
+    :tmt:story:`/spec/tests/test` key specification for more
     details.
 
     .. code-block:: yaml
@@ -143,6 +141,7 @@ class PrepareShell(tmt.steps.prepare.PreparePlugin[PrepareShellData]):
             with self._url_clone_lock:
                 if not repo_path.exists():
                     repo_path.parent.mkdir(parents=True, exist_ok=True)
+
                     tmt.utils.git.git_clone(
                         url=self.data.url,
                         destination=repo_path,
@@ -167,14 +166,14 @@ class PrepareShell(tmt.steps.prepare.PreparePlugin[PrepareShellData]):
                 ),
             )
 
-        try:
-            _prepare_remote_repository()
+        _, error, timer = Stopwatch.measure(_prepare_remote_repository)
 
-        except Exception as exc:
+        if error is not None:
             return self._save_error_outcome(
                 label=f'{self.name} / remote script repository',
+                timer=timer,
                 guest=guest,
-                exception=exc,
+                exception=error,
                 outcome=outcome,
             )
 
@@ -196,21 +195,21 @@ class PrepareShell(tmt.steps.prepare.PreparePlugin[PrepareShellData]):
                 )
             )
 
-        try:
-            _prepare_topology()
+        _, error, timer = Stopwatch.measure(_prepare_topology)
 
-        except Exception as exc:
+        if error is not None:
             return self._save_error_outcome(
                 label=f'{self.name} / guest topology',
+                timer=timer,
                 guest=guest,
-                exception=exc,
+                exception=error,
                 outcome=outcome,
             )
 
         def _invoke_script(
             command: ShellScript,
             environment: tmt.utils.Environment,
-        ) -> tmt.utils.CommandOutput:
+        ) -> Optional[tmt.utils.CommandOutput]:
             guest.push(source=self.phase_workdir)
 
             return guest.execute(
@@ -218,6 +217,7 @@ class PrepareShell(tmt.steps.prepare.PreparePlugin[PrepareShellData]):
                 cwd=worktree,
                 env=environment,
                 sourced_files=[self.step.plan.plan_source_script],
+                immediately=False,
             )
 
         for script_index, script in enumerate(self.data.script):
@@ -267,12 +267,10 @@ class PrepareShell(tmt.steps.prepare.PreparePlugin[PrepareShellData]):
                 )
 
             if output is None:
-                return self._save_error_outcome(
-                    label=script_name,
-                    note='Command produced no output but raised no exception',
-                    guest=guest,
-                    outcome=outcome,
+                self._save_deferred_run_outcome(
+                    label=script_name, timer=timer, guest=guest, outcome=outcome
                 )
+                continue
 
             self._post_action_pull(
                 guest=guest,

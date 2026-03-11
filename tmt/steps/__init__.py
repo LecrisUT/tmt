@@ -4,7 +4,6 @@ Step Classes
 
 import abc
 import collections
-import datetime
 import functools
 import itertools
 import re
@@ -75,14 +74,12 @@ from tmt.utils import (
 from tmt.utils.templates import render_template
 
 if TYPE_CHECKING:
-    import tmt.base
+    import tmt.base.core
     import tmt.cli
     import tmt.plugins
-    import tmt.steps.discover
-    import tmt.steps.execute
-    from tmt.base import Plan
+    from tmt.base.plan import Plan
+    from tmt.guest import Guest, TransferOptions
     from tmt.result import BaseResult, PhaseResult
-    from tmt.steps.provision import Guest, TransferOptions
 
 
 DEFAULT_ALLOWED_HOW_PATTERN: Pattern[str] = re.compile(r'.*')
@@ -101,15 +98,15 @@ _PLUGIN_CLASS_NAME_TO_STEP_PATTERN = re.compile(r'tmt.steps.([a-z]+)')
 #
 
 #: The default order of any object.
-# TODO: this is a duplication of tmt.base.DEFAULT_ORDER. Unfortunately, tmt.base
+# TODO: this is a duplication of tmt.base.core.DEFAULT_ORDER. Unfortunately, tmt.base.core
 # imports tmt.steps, not the other way around.
-# `PHASE_ORDER_DEFAULT = tmt.base.DEFAULT_ORDER` would be way better.
+# `PHASE_ORDER_DEFAULT = tmt.base.core.DEFAULT_ORDER` would be way better.
 PHASE_ORDER_DEFAULT = 50
 #: Installation of essential plugin and check requirements.
 PHASE_ORDER_PREPARE_INSTALL_ESSENTIAL_REQUIRES = 30
-#: Installation of packages :ref:`required</spec/tests/require>` by tests.
+#: Installation of packages :tmt:story:`required</spec/tests/require>` by tests.
 PHASE_ORDER_PREPARE_INSTALL_REQUIRES = 70
-#: Installation of packages :ref:`recommended</spec/tests/recommend>` by tests.
+#: Installation of packages :tmt:story:`recommended</spec/tests/recommend>` by tests.
 PHASE_ORDER_PREPARE_INSTALL_RECOMMENDS = 75
 
 # Supported steps and actions
@@ -423,6 +420,16 @@ class StepData(
 
         return cast(_RawStepData, {key_to_option(key): value for key, value in self.items()})
 
+    def to_minimal_spec(self) -> _RawStepData:
+        return cast(
+            _RawStepData,
+            {
+                key_to_option(key): value
+                for key, value in self.items()
+                if value not in (None, [], {})
+            },
+        )
+
     @classmethod
     def pre_normalization(cls, raw_data: _RawStepData, logger: tmt.log.Logger) -> None:
         """
@@ -435,6 +442,7 @@ class StepData(
         """
         Called after normalization, useful for tweaking normalized data
         """
+        self.check_deprecated_keys(cast(dict[str, Any], raw_data), logger)
 
     # ignore[override]: expected, we need to accept one extra parameter, `logger`.
     @classmethod
@@ -467,16 +475,17 @@ class RawWhereableStepData(TypedDict, total=False):
 
 
 @container
-class WhereableStepData:
+class WhereableStepData(SerializableContainer):
     """
     Keys shared by step data that may be limited to a particular guest.
 
     To be used as a mixin class, adds necessary keys.
 
-    See [1] and [2] for specification.
+    See [1-3] for specification.
 
-    1. https://tmt.readthedocs.io/en/stable/spec/plans.html#where
-    2. https://tmt.readthedocs.io/en/stable/spec/plans.html#spec-plans-prepare-where
+    1. :tmt:story:`discover.where</spec/plans/discover/where>`
+    2. :tmt:story:`prepare.where</spec/plans/prepare/where>`
+    3. :tmt:story:`finish.where</spec/plans/finish/where>`
     """
 
     where: list[str] = field(
@@ -871,7 +880,7 @@ class Step(
             'status': self.status(),
             'data': [datum.to_serialized() for datum in self.data],
         }
-        self.write(Path('step.yaml'), tmt.utils.dict_to_yaml(content))
+        self.write(Path('step.yaml'), tmt.utils.to_yaml(content))
 
     def _load_results(
         self,
@@ -905,7 +914,7 @@ class Step(
         try:
             raw_results = [result.to_serialized() for result in results]
 
-            self.write(Path('results.yaml'), tmt.utils.dict_to_yaml(raw_results))
+            self.write(Path('results.yaml'), tmt.utils.to_yaml(raw_results))
 
         except Exception as exc:
             raise GeneralError('Cannot save step results.') from exc
@@ -1889,7 +1898,7 @@ class BasePlugin(
         """
 
         # Avoid circular imports
-        import tmt.base
+        import tmt.base.core
 
         # Show empty config with default method only in verbose mode
         if self.data.is_bare and not self.verbosity_level:
@@ -2043,7 +2052,7 @@ class BasePlugin(
         # Include order in verbose mode
         logger.verbose('order', self.order, 'magenta', level=3)
 
-    def essential_requires(self) -> list['tmt.base.Dependency']:
+    def essential_requires(self) -> list['tmt.base.core.Dependency']:
         """
         Collect all essential requirements of the plugin.
 
@@ -2337,6 +2346,9 @@ class Plugin(BasePlugin[StepDataT, PluginReturnValueT]):
                 result=ResultOutcome.PASS,
                 log=[log_filepath.relative_to(self.step_workdir)],
                 guest=ResultGuestData.from_guest(guest=guest),
+                start_time=timer.start_time_formatted,
+                end_time=timer.end_time_formatted,
+                duration=timer.duration_formatted,
             )
         )
 
@@ -2396,6 +2408,9 @@ class Plugin(BasePlugin[StepDataT, PluginReturnValueT]):
                     note=tmt.utils.render_exception_as_notes(exception),
                     log=[log_filepath.relative_to(self.step_workdir)],
                     guest=ResultGuestData.from_guest(guest=guest),
+                    start_time=timer.start_time_formatted,
+                    end_time=timer.end_time_formatted,
+                    duration=timer.duration_formatted,
                 )
             )
 
@@ -2406,10 +2421,51 @@ class Plugin(BasePlugin[StepDataT, PluginReturnValueT]):
                     result=ResultOutcome.ERROR,
                     note=tmt.utils.render_exception_as_notes(exception),
                     guest=ResultGuestData.from_guest(guest=guest),
+                    start_time=timer.start_time_formatted,
+                    end_time=timer.end_time_formatted,
+                    duration=timer.duration_formatted,
                 )
             )
 
         outcome.exceptions.append(exception)
+
+        return outcome
+
+    def _save_deferred_run_outcome(
+        self,
+        *,
+        label: str,
+        timer: Stopwatch,
+        guest: 'Guest',
+        outcome: PluginOutcome,
+    ) -> PluginOutcome:
+        """
+        Save a deferred run outcome, recorded as an INFO result.
+        Used when a command was collected for deferred batch execution
+        in image mode.
+
+        :param label: see :py:func:`write_command_report`. It is also
+            used as the name of the newly created result.
+        :param timer: see :py:func:`write_command_report`.
+        :param guest: the guest on which the phase ran. It is attached
+            to the result.
+        :param outcome: plugin outcome to attach new result to.
+        :returns: plugin outcome provided as argument, ``outcome``.
+        """
+
+        from tmt.result import PhaseResult, ResultGuestData
+
+        outcome.results.append(
+            PhaseResult(
+                name=label,
+                result=tmt.steps.ResultOutcome.INFO,
+                note=['Command collected for deferred execution'],
+                guest=ResultGuestData.from_guest(guest=guest),
+                start_time=timer.start_time_formatted,
+                end_time=timer.end_time_formatted,
+                duration=timer.duration_formatted,
+            )
+        )
 
         return outcome
 
@@ -2418,6 +2474,7 @@ class Plugin(BasePlugin[StepDataT, PluginReturnValueT]):
         self,
         *,
         label: str,
+        timer: Stopwatch,
         exception: Exception,
         note: None = None,
         guest: 'Guest',
@@ -2430,6 +2487,7 @@ class Plugin(BasePlugin[StepDataT, PluginReturnValueT]):
         self,
         *,
         label: str,
+        timer: Stopwatch,
         exception: None = None,
         note: str,
         guest: 'Guest',
@@ -2441,6 +2499,7 @@ class Plugin(BasePlugin[StepDataT, PluginReturnValueT]):
         self,
         *,
         label: str,
+        timer: Stopwatch,
         exception: Optional[Exception] = None,
         note: Optional[str] = None,
         guest: 'Guest',
@@ -2452,6 +2511,8 @@ class Plugin(BasePlugin[StepDataT, PluginReturnValueT]):
         Creates new :py:attr:`ResultOutcome.ERROR` result.
 
         :param label: Used as the name of the newly created result.
+        :param timer: a stopwatch providing timing-related info about
+            the reported action.
         :param exception: If set, it is attached as note to the newly
             created result.
         :param note: If set, it is attached to the newly created result.
@@ -2469,6 +2530,9 @@ class Plugin(BasePlugin[StepDataT, PluginReturnValueT]):
                     result=ResultOutcome.ERROR,
                     note=tmt.utils.render_exception_as_notes(exception),
                     guest=ResultGuestData.from_guest(guest=guest),
+                    start_time=timer.start_time_formatted,
+                    end_time=timer.end_time_formatted,
+                    duration=timer.duration_formatted,
                 )
             )
 
@@ -2481,6 +2545,9 @@ class Plugin(BasePlugin[StepDataT, PluginReturnValueT]):
                     result=ResultOutcome.ERROR,
                     note=[note],
                     guest=ResultGuestData.from_guest(guest=guest),
+                    start_time=timer.start_time_formatted,
+                    end_time=timer.end_time_formatted,
+                    duration=timer.duration_formatted,
                 )
             )
 
@@ -2530,8 +2597,20 @@ class Action(Phase, tmt.utils.MultiInvokableCommon):
         Parse options and store phase order
         """
 
-        phases = {}
+        phases: dict[str, list[int]] = {}
         options: list[str] = cls._opt('step', default=[])
+
+        # When `-t` (test mode) is used without explicit `--step`,
+        # return empty phases to prevent the default "last enabled step" behavior.
+        #
+        # Without this check, test mode would log in twice:
+        # 1. After each test (handled by after_test() for per-test login)
+        # 2. At the end of the last enabled step (default behavior)
+        #
+        # Users who want both per-test login AND step-level login can
+        # explicitly specify the step using `--step <step>`.
+        if not options and cls._opt('test'):
+            return phases
 
         # Use the end of the last enabled step if no --step given
         if not options:
@@ -2689,7 +2768,7 @@ class Reboot(Action):
         assert hasattr(self.parent, 'plan')
         assert self.parent.plan is not None
 
-        from tmt.steps.provision import RebootMode
+        from tmt.guest import RebootMode
 
         command = tmt.utils.ShellScript(self.opt('command')) if self.opt('command') else None
 
@@ -2777,7 +2856,10 @@ class Login(Action):
             '-t',
             '--test',
             is_flag=True,
-            help='Log into the guest after each executed test in the execute phase.',
+            help="""
+                 Log into the guest after each test (per-test mode). Disables default step-level
+                 login unless combined with --step.
+                 """,
         )
         def login(context: 'tmt.cli.Context', **kwargs: Any) -> None:
             """
@@ -2787,6 +2869,9 @@ class Login(Action):
             enabled step. When used together with the --last option the
             last completed step is selected. Use one or more --step
             options to select a different step instead.
+
+            Use --test (-t) for per-test login mode instead of the default
+            step-level login. Combine with --step to enable both modes.
 
             Optional phase can be provided to specify the exact phase of
             the step when the shell should be provided. The following
@@ -2832,7 +2917,7 @@ class Login(Action):
         if force or self._enabled_by_results(self.parent.plan.execute.results()):
             self._login()
 
-    def _enabled_by_results(self, results: list['tmt.base.Result']) -> bool:
+    def _enabled_by_results(self, results: list['tmt.base.core.Result']) -> bool:
         """
         Verify possible test result condition
         """
@@ -2865,6 +2950,11 @@ class Login(Action):
         """
         Run the interactive command
         """
+
+        # Discover step runs before provision, so no guests exist yet
+        if self.parent.name == 'discover':
+            self.warn("Login not possible in discover step (no guests provisioned yet).")
+            return
 
         # Nothing to do if there are no guests ready for login
         if not self.parent.plan.provision.ready_guests:
@@ -2917,7 +3007,7 @@ class Login(Action):
 
     def after_test(
         self,
-        results: list['tmt.base.Result'],
+        results: list['tmt.base.core.Result'],
         cwd: Optional[Path] = None,
         env: Optional[tmt.utils.Environment] = None,
     ) -> None:
@@ -3016,7 +3106,7 @@ class Topology(SerializableContainer):
         serialized['guest-names'] = serialized.pop('guest_names')
         serialized['role-names'] = serialized.pop('role_names')
 
-        filepath.write_text(tmt.utils.dict_to_yaml(serialized))
+        filepath.write_text(tmt.utils.to_yaml(serialized))
 
         return filepath
 
@@ -3099,7 +3189,7 @@ class Topology(SerializableContainer):
         """
 
         # Avoid circular imports
-        from tmt.steps.provision import TransferOptions
+        from tmt.guest import TransferOptions
 
         topology_filepaths = self.save(dirpath=dirpath, filename_base=filename_base)
 

@@ -1,26 +1,26 @@
 import abc
 import copy
 import functools
+import itertools
 import signal as _signal
 import subprocess
 import threading
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import TYPE_CHECKING, Any, Optional, TypeVar, Union, cast
 
 import click
-import fmf
 import fmf.utils
 
 import tmt
-import tmt.base
+import tmt.base.core
 import tmt.log
 import tmt.steps
 import tmt.steps.scripts
 import tmt.utils
 import tmt.utils.signals
-import tmt.utils.wait
 from tmt.checks import Check, CheckEvent, CheckPlugin
 from tmt.container import container, field, simple_field
+from tmt.guest import Guest
 from tmt.options import option
 from tmt.plugins import PluginRegistry
 from tmt.result import (
@@ -37,25 +37,26 @@ from tmt.steps.context.reboot import RebootContext
 from tmt.steps.context.restart import RestartContext
 from tmt.steps.context.restraint import RestraintContext
 from tmt.steps.discover import Discover, DiscoverPlugin, DiscoverStepData
-from tmt.steps.provision import Guest
 from tmt.utils import (
     Command,
     CommandOutput,
+    Environment,
+    EnvVarValue,
+    GeneralError,
+    HasEnvironment,
     HasStepWorkdir,
     Path,
+    ProcessExitCodes,
     ShellScript,
     Stopwatch,
     configure_bool_constant,
-    format_duration,
-    format_timestamp,
 )
 
 if TYPE_CHECKING:
+    import tmt.base.plan
     import tmt.cli
-    import tmt.options
     import tmt.result
     import tmt.steps.discover
-    import tmt.steps.provision
 
 # Test data and checks directory names
 TEST_DATA = 'data'
@@ -80,7 +81,7 @@ SUBMITTED_FILES_FILENAME = "submitted-files.log"
 @container
 class ExecuteStepData(tmt.steps.WhereableStepData, tmt.steps.StepData):
     duration: str = field(
-        # TODO: ugly circular dependency (see tmt.base.DEFAULT_TEST_DURATION_L2)
+        # TODO: ugly circular dependency (see tmt.base.core.DEFAULT_TEST_DURATION_L2)
         default='1h',
         option='--duration',
         help="""
@@ -112,7 +113,7 @@ ExecuteStepDataT = TypeVar('ExecuteStepDataT', bound=ExecuteStepData)
 
 
 @container
-class TestInvocation(HasStepWorkdir):
+class TestInvocation(HasStepWorkdir, HasEnvironment):
     """
     A bundle describing one test invocation.
 
@@ -123,8 +124,22 @@ class TestInvocation(HasStepWorkdir):
     logger: tmt.log.Logger
 
     phase: 'ExecutePlugin[Any]'
-    test: 'tmt.base.Test'
+    test: 'tmt.base.core.Test'
     guest: Guest
+
+    #: Environment variables for this invocation.
+    #:
+    #: .. note::
+    #:
+    #:    We need to present environment as a single, updateable
+    #:    :py:class:`Environment` instance. Unfortunately, ``@property``
+    #:    would return new instance every time, and
+    #:    :py:func:`functools.cached_property` would needed to be
+    #:    "manually" invalidated so we could refresh the dynamic portion
+    #:    of the environment. Therefore this instance to hold the
+    #:    environment, and the :py:attr:`environment` property to
+    #:    include the up-to-date values.
+    _environment: Optional[Environment] = None
 
     #: Process running the test. What binary it is depends on the guest
     #: implementation and the test, it may be, for example, a shell process,
@@ -320,28 +335,115 @@ class TestInvocation(HasStepWorkdir):
             logger=self.logger,
         )
 
+    @property
+    def environment(self) -> Environment:
+        if self._environment is None:
+            # narrow type
+            assert isinstance(self.phase.parent, Execute)
+
+            # narrow type
+            assert isinstance(self.phase.parent.plan.my_run, tmt.base.core.Run)
+
+            environment = Environment()
+
+            environment.update(
+                self.guest.environment,
+                self.test.environment,
+                self.phase.parent.plan.environment,
+            )
+
+            environment["TMT_TEST_NAME"] = EnvVarValue(self.test.name)
+            environment["TMT_TEST_INVOCATION_PATH"] = EnvVarValue(self.path)
+            environment["TMT_TEST_DATA"] = EnvVarValue(self.test_data_path)
+            environment["TMT_TEST_SUBMITTED_FILES"] = EnvVarValue(self.submission_log_path)
+            environment['TMT_TEST_SERIAL_NUMBER'] = EnvVarValue(str(self.test.serial_number))
+            environment["TMT_TEST_METADATA"] = EnvVarValue(self.path / TEST_METADATA_FILENAME)
+
+            environment['TMT_TEST_ITERATION_ID'] = EnvVarValue(
+                f"{self.phase.parent.plan.my_run.unique_id}-{self.test.serial_number}"
+            )
+
+        else:
+            environment = self._environment
+
+        environment.update(
+            # Add variables from invocation contexts
+            self.abort,
+            self.reboot,
+            self.restart,
+            self.pidfile,
+            self.restraint,
+            # Add variables the framework wants to expose
+            self.test.test_framework.get_environment_variables(self, self.logger),
+        )
+
+        self._environment = environment
+
+        return environment
+
+    def invoke_check(self, event: CheckEvent, check: Check) -> list[CheckResult]:
+        with Stopwatch() as timer:
+            results = check.go(
+                event=event,
+                invocation=self,
+                environment=self.environment,
+                logger=self.logger,
+            )
+
+        for result in results:
+            result.event = event
+
+            result.start_time = timer.start_time_formatted
+            result.end_time = timer.end_time_formatted
+            result.duration = timer.duration_formatted
+
+        return results
+
+    def invoke_checks(self, event: CheckEvent, checks: Sequence[Check]) -> list[CheckResult]:
+        return list(
+            itertools.chain.from_iterable(self.invoke_check(event, check) for check in checks)
+        )
+
+    def invoke_checks_before_test(self) -> list[CheckResult]:
+        return self.invoke_checks(CheckEvent.BEFORE_TEST, self.test.check)
+
+    def invoke_checks_after_test(self) -> list[CheckResult]:
+        return self.invoke_checks(CheckEvent.AFTER_TEST, self.test.check)
+
+    def invoke_internal_checks(self) -> list[CheckResult]:
+        return self.invoke_checks(CheckEvent.AFTER_TEST, CheckPlugin.internal_checks(self.logger))
+
+    @functools.cached_property
+    def deadline(self) -> tmt.utils.wait.Deadline:
+        """
+        Test duration represented as a deadline.
+        """
+
+        return tmt.utils.wait.Deadline.from_seconds(
+            tmt.utils.duration_to_seconds(
+                self.test.duration, tmt.base.core.DEFAULT_TEST_DURATION_L1
+            )
+        )
+
     def invoke_test(
         self,
         command: ShellScript,
         *,
         cwd: Path,
-        env: tmt.utils.Environment,
         log: tmt.log.LoggingFunction,
         interactive: bool,
-        timeout: Optional[int],
+        deadline: Optional[tmt.utils.wait.Deadline],
     ) -> tmt.utils.CommandOutput:
         """
         Start the command which represents the test in this invocation.
 
         :param cwd: if set, command would be executed in the given directory,
             otherwise the current working directory is used.
-        :param env: environment variables to combine with the current environment
-            before running the command.
         :param interactive: if set, the command would be executed in an interactive
             manner, i.e. with stdout and stdout connected to terminal for live
             interaction with user.
-        :param timeout: if set, command would be interrupted, if still running,
-            after this many seconds.
+        :param deadline: if set, the test would be interrupted once reaching
+            this deadline.
         :param log: a logging function to use for logging of command output. By
             default, ``logger.debug`` is used.
         :returns: command output.
@@ -388,43 +490,69 @@ class TestInvocation(HasStepWorkdir):
                 if self.on_interrupt_callback_token is not None:
                     tmt.utils.signals.remove_callback(self.on_interrupt_callback_token)
 
-        with Stopwatch() as timer:
-            self.start_time = format_timestamp(timer.start_time)
+        def _invoke(timeout: Optional[int] = None) -> CommandOutput:
+            """
+            Actually invoke the test, and handle its immediate outcome.
+            """
 
-            try:
-                output = self.guest.execute(
-                    command,
-                    cwd=cwd,
-                    env=env,
-                    join=True,
-                    interactive=interactive,
-                    tty=self.test.tty,
-                    log=log,
-                    timeout=timeout,
-                    on_process_start=_save_process,
-                    on_process_end=_reset_process,
-                    test_session=True,
-                    friendly_command=str(self.test.test),
-                    sourced_files=[self.phase.step.plan.plan_source_script],
-                )
+            output, error, timer = Stopwatch.measure(
+                self.guest.execute,
+                command,
+                cwd=cwd,
+                env=self.environment,
+                join=True,
+                interactive=interactive,
+                tty=self.test.tty,
+                log=log,
+                timeout=timeout,
+                on_process_start=_save_process,
+                on_process_end=_reset_process,
+                test_session=True,
+                friendly_command=str(self.test.test),
+                sourced_files=[self.phase.step.plan.plan_source_script],
+            )
 
-                self.return_code = tmt.utils.ProcessExitCodes.SUCCESS
+            self.start_time = timer.start_time_formatted
+            self.end_time = timer.end_time_formatted
+            self.real_duration = timer.duration_formatted
 
-            except tmt.utils.RunError as error:
+            if error is not None:
                 self.exceptions.append(error)
 
-                output = error.output
+                if isinstance(error, tmt.utils.RunError):
+                    output = error.output
 
-                self.return_code = error.returncode
+                    self.return_code = error.returncode
 
-                if self.return_code == tmt.utils.ProcessExitCodes.TIMEOUT:
-                    self.logger.debug(f"Test duration '{self.test.duration}' exceeded.")
+                else:
+                    raise error
 
-                elif tmt.utils.ProcessExitCodes.is_pidfile(self.return_code):
-                    self.logger.warning('Test failed to manage its pidfile.')
+            elif output is not None:
+                self.return_code = tmt.utils.ProcessExitCodes.SUCCESS
 
-        self.end_time = format_timestamp(timer.end_time)
-        self.real_duration = format_duration(timer.duration)
+            else:
+                raise GeneralError('Command produced no output but raised no exception.')
+
+            return output
+
+        if deadline is None:
+            output = _invoke()
+
+        else:
+            with deadline:
+                if deadline.is_due:
+                    self.return_code = ProcessExitCodes.TIMEOUT
+
+                    output = CommandOutput(None, None)
+
+                else:
+                    output = _invoke(int(deadline.time_left.total_seconds()))
+
+        if self.return_code == tmt.utils.ProcessExitCodes.TIMEOUT:
+            self.logger.debug(f"Test duration '{self.test.duration}' exceeded.")
+
+        elif tmt.utils.ProcessExitCodes.is_pidfile(self.return_code):
+            self.logger.warning('Test failed to manage its pidfile.')
 
         return output
 
@@ -462,7 +590,7 @@ class TestInvocation(HasStepWorkdir):
 
             self.process.send_signal(signal)
 
-            if isinstance(self.guest, tmt.steps.provision.GuestSsh):
+            if isinstance(self.guest, tmt.guest.GuestSsh):
                 self.guest._cleanup_ssh_master_process(signal, logger)
 
 
@@ -602,7 +730,7 @@ class ExecutePlugin(tmt.steps.Plugin[ExecuteStepDataT, None]):
             test_metadata["context"] = self.step.plan.fmf_context.to_spec()
             self.write(
                 invocation.path / TEST_METADATA_FILENAME,
-                tmt.utils.dict_to_yaml(test_metadata),
+                tmt.utils.to_yaml(test_metadata),
             )
 
             # When running again then we only keep results for tests that won't be executed again
@@ -891,6 +1019,19 @@ class ExecutePlugin(tmt.steps.Plugin[ExecuteStepDataT, None]):
             level=3,
         )
 
+    @property
+    @abc.abstractmethod
+    def tasks(
+        self,
+    ) -> Iterator[tuple[Optional[str], list['Guest']]]:
+        """
+        Iterate over tasks to be enqueued for execution.
+
+        :yields: tuple of two items, a discover phase name
+            and the list of guests it should run on.
+        """
+        raise NotImplementedError
+
     @abc.abstractmethod
     def results(self) -> list["tmt.Result"]:
         """
@@ -898,79 +1039,6 @@ class ExecutePlugin(tmt.steps.Plugin[ExecuteStepDataT, None]):
         """
 
         raise NotImplementedError
-
-    def _run_checks_for_test(
-        self,
-        *,
-        event: CheckEvent,
-        invocation: TestInvocation,
-        checks: Sequence[Check],
-        environment: Optional[tmt.utils.Environment] = None,
-        logger: tmt.log.Logger,
-    ) -> list[CheckResult]:
-        results: list[CheckResult] = []
-
-        for check in checks:
-            with Stopwatch() as timer:
-                check_results = check.go(
-                    event=event, invocation=invocation, environment=environment, logger=logger
-                )
-
-            for result in check_results:
-                result.event = event
-
-                result.start_time = format_timestamp(timer.start_time)
-                result.end_time = format_timestamp(timer.end_time)
-                result.duration = format_duration(timer.duration)
-
-            results += check_results
-
-        return results
-
-    def run_checks_before_test(
-        self,
-        *,
-        invocation: TestInvocation,
-        environment: Optional[tmt.utils.Environment] = None,
-        logger: tmt.log.Logger,
-    ) -> list[CheckResult]:
-        return self._run_checks_for_test(
-            event=CheckEvent.BEFORE_TEST,
-            invocation=invocation,
-            checks=invocation.test.check,
-            environment=environment,
-            logger=logger,
-        )
-
-    def run_checks_after_test(
-        self,
-        *,
-        invocation: TestInvocation,
-        environment: Optional[tmt.utils.Environment] = None,
-        logger: tmt.log.Logger,
-    ) -> list[CheckResult]:
-        return self._run_checks_for_test(
-            event=CheckEvent.AFTER_TEST,
-            invocation=invocation,
-            checks=invocation.test.check,
-            environment=environment,
-            logger=logger,
-        )
-
-    def run_internal_checks(
-        self,
-        *,
-        invocation: TestInvocation,
-        environment: Optional[tmt.utils.Environment] = None,
-        logger: tmt.log.Logger,
-    ) -> list[CheckResult]:
-        return self._run_checks_for_test(
-            event=CheckEvent.AFTER_TEST,
-            invocation=invocation,
-            checks=CheckPlugin.internal_checks(logger),
-            environment=environment,
-            logger=logger,
-        )
 
 
 class Execute(tmt.steps.Step):
@@ -986,7 +1054,7 @@ class Execute(tmt.steps.Step):
     def __init__(
         self,
         *,
-        plan: "tmt.Plan",
+        plan: "tmt.base.plan.Plan",
         data: tmt.steps.RawStepDataArgument,
         logger: tmt.log.Logger,
     ) -> None:
@@ -1191,29 +1259,14 @@ class Execute(tmt.steps.Step):
             if isinstance(phase, Action):
                 queue.enqueue_action(phase=phase)
 
-            else:
-                # A single execute plugin is expected to process (potentially)
-                # multiple discover phases. There must be a way to tell the execute
-                # plugin which discover phase to focus on. Unfortunately, the
-                # current way is the execute plugin checking its `discover`
-                # attribute. For each discover phase, we need a copy of the execute
-                # plugin, so we could point it to that discover phase rather than
-                # let is "see" all tests, or test in different discover phase.
-                for discover in self.plan.discover.phases(classes=(DiscoverPlugin,)):
-                    if not discover.enabled_by_when:
-                        continue
-
+            elif isinstance(phase, ExecutePlugin):
+                for discover_phase_name, guests in phase.tasks:
+                    # For each discover phase, we need a copy of the execute
+                    # plugin, so we could point it to that discover phase rather than
+                    # let it "see" all tests, or test in different discover phase.
                     phase_copy = cast(ExecutePlugin[ExecuteStepData], copy.copy(phase))
-                    phase_copy.discover_phase = discover.name
-
-                    queue.enqueue_plugin(
-                        phase=phase_copy,
-                        guests=[
-                            guest
-                            for guest in self.plan.provision.ready_guests
-                            if discover.enabled_on_guest(guest)
-                        ],
-                    )
+                    phase_copy.discover_phase = discover_phase_name
+                    queue.enqueue_plugin(phase=phase_copy, guests=guests)
 
         failed_tasks: list[Union[ActionTask, PluginTask[ExecuteStepData, None]]] = []
 

@@ -6,9 +6,8 @@ import _pytest.logging
 import fmf
 import pytest
 
+import tmt.guest
 import tmt.hardware
-import tmt.steps
-import tmt.steps.provision
 import tmt.utils
 from tmt.hardware import Hardware
 from tmt.log import Logger
@@ -135,7 +134,7 @@ def test_normalize_hardware(root_logger) -> None:
         'disk[1].size=1',
     )
 
-    tmt.steps.provision.normalize_hardware('', spec, root_logger)
+    tmt.guest.normalize_hardware('', spec, root_logger)
 
 
 @pytest.mark.parametrize(
@@ -173,7 +172,7 @@ def test_normalize_invalid_hardware(
     spec: tmt.hardware.Spec, expected_exc: type[Exception], expected_message: str, root_logger
 ) -> None:
     with pytest.raises(expected_exc, match=expected_message):
-        tmt.steps.provision.normalize_hardware('', spec, root_logger)
+        tmt.guest.normalize_hardware('', spec, root_logger)
 
 
 FULL_HARDWARE_REQUIREMENTS = """
@@ -376,10 +375,10 @@ def test_parse_maximal_constraint() -> None:
     assert hw.constraint is not None
 
     print(hw.to_spec())
-    print(tmt.utils.dict_to_yaml(hw.constraint.to_spec()))
+    print(tmt.utils.to_yaml(hw.constraint.to_spec()))
     print(textwrap.dedent(hw_spec_out))
 
-    assert tmt.utils.dict_to_yaml(hw.constraint.to_spec()) == textwrap.dedent(hw_spec_out).lstrip()
+    assert tmt.utils.to_yaml(hw.constraint.to_spec()) == textwrap.dedent(hw_spec_out).lstrip()
 
 
 def test_parse_or_constraint() -> None:
@@ -394,7 +393,7 @@ def test_parse_or_constraint() -> None:
     """
 
     hw = parse_hw(OR_HARDWARE_REQUIREMENTS)
-    assert tmt.utils.dict_to_yaml(hw.constraint.to_spec()) == textwrap.dedent(hw_spec_out).lstrip()
+    assert tmt.utils.to_yaml(hw.constraint.to_spec()) == textwrap.dedent(hw_spec_out).lstrip()
 
 
 def test_report_support(

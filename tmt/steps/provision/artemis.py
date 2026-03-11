@@ -4,9 +4,8 @@ from typing import Any, Optional, TypedDict, Union, cast
 import requests
 
 import tmt
-import tmt.hardware
+import tmt.guest
 import tmt.log
-import tmt.options
 import tmt.steps
 import tmt.steps.provision
 import tmt.utils
@@ -14,16 +13,15 @@ import tmt.utils.signals
 import tmt.utils.url
 import tmt.utils.wait
 from tmt.container import container, field
-from tmt.steps.provision import RebootMode
+from tmt.guest import RebootMode
 from tmt.utils import (
     Command,
     GuestLogError,
-    Path,
     ProvisionError,
     ShellScript,
-    dict_to_yaml,
     normalize_string_dict,
     retry_session,
+    to_yaml,
 )
 from tmt.utils.wait import Deadline, Waiting
 
@@ -32,6 +30,13 @@ from tmt.utils.wait import Deadline, Waiting
 # know when particular feature became available, and avoid using it with
 # older APIs.
 SUPPORTED_API_VERSIONS = (
+    # NEW: cpu.vendor and cpu.vendor-name HW requirements
+    '0.0.84',
+    # NEW: beaker.panic-watchdog HW requirement
+    # NEW: iommu HW requirements
+    # NEW: system.model-name HW requirement
+    # NEW: device HW requirements
+    '0.0.83',
     # NEW: guest reboot
     '0.0.74',
     # NEW: allow passing security group rules for guest creation
@@ -115,7 +120,7 @@ def _normalize_log_type(key_address: str, raw_value: Any, logger: tmt.log.Logger
 
 
 @container
-class ArtemisGuestData(tmt.steps.provision.GuestSshData):
+class ArtemisGuestData(tmt.guest.GuestSshData):
     # API
     api_url: str = field(
         default=DEFAULT_API_URL,
@@ -307,14 +312,14 @@ class ArtemisProvisionError(ProvisionError):
             ]
 
             if request_data is not None:
-                message_components += ['', dict_to_yaml(request_data)]
+                message_components += ['', to_yaml(request_data)]
 
             message_components += [
                 f'Response: {response.status_code} {response.reason}',
                 '',
-                dict_to_yaml(dict(response.headers)),
+                to_yaml(dict(response.headers)),
                 '',
-                dict_to_yaml(response.json()),
+                to_yaml(response.json()),
             ]
 
             message = '\n'.join(message_components)
@@ -597,7 +602,7 @@ class GuestArtemis(tmt.GuestSsh):
         for log_type in self.log_type:
             self.collect_log(GuestLogArtemis(name=log_type, guest=self))
 
-        self.setup_logs(self._logger)
+        self.setup_logs(logger=self._logger)
 
         def get_new_state() -> GuestInspectType:
             nonlocal previous_state
@@ -684,7 +689,7 @@ class GuestArtemis(tmt.GuestSsh):
         command: Optional[Union[Command, ShellScript]] = None,
         waiting: Optional[Waiting] = None,
     ) -> bool:
-        waiting = waiting or tmt.steps.provision.default_reboot_waiting()
+        waiting = waiting or tmt.guest.default_reboot_waiting()
 
         if mode == RebootMode.HARD:
             if self.guestname is None:
@@ -720,8 +725,8 @@ class ProvisionArtemis(tmt.steps.provision.ProvisionPlugin[ProvisionArtemisData]
     Reserve a machine using the Artemis service.
     Users can specify many requirements, mostly regarding the
     desired OS, RAM, disk size and more. Most of the HW specifications
-    defined in the :ref:`/spec/hardware` are supported. Including the
-    :ref:`/spec/plans/provision/kickstart`.
+    defined in the :tmt:story:`/spec/hardware` are supported. Including the
+    :tmt:story:`/spec/plans/provision/kickstart`.
 
     Artemis takes machines from AWS, OpenStack, Beaker or Azure.
     By default, Artemis handles the selection of a cloud provider
@@ -829,14 +834,14 @@ class GuestLogBlobType(TypedDict):
 
 
 @container
-class GuestLogArtemis(tmt.steps.provision.GuestLog):
+class GuestLogArtemis(tmt.guest.GuestLog):
     guest: GuestArtemis
 
     @functools.cached_property
     def filename(self) -> str:
         return self.name.replace(':', '-').replace('/', '-')
 
-    def setup(self, logger: tmt.log.Logger) -> None:
+    def setup(self, *, logger: tmt.log.Logger) -> None:
         if self.guest.guestname is None:
             raise GuestLogError("Failed to initialize, guestname is not known yet.", self)
 
@@ -851,7 +856,7 @@ class GuestLogArtemis(tmt.steps.provision.GuestLog):
 
         logger.info(f'{self.name} log', 'requested', 'green')
 
-    def update(self, filepath: Path, logger: tmt.log.Logger) -> None:
+    def update(self, *, logger: tmt.log.Logger) -> None:
         if self.guest.guestname is None:
             raise GuestLogError("Failed to fetch, guestname is not known yet.", self)
 
@@ -868,7 +873,7 @@ class GuestLogArtemis(tmt.steps.provision.GuestLog):
 
         log_data = response.json()
 
-        with self.staging_file(filepath, logger) as staging_filepath:
+        with self.staging_file(self.filepath, logger) as staging_filepath:
             if log_data['state'] == 'unsupported':
                 staging_filepath.write_text(
                     f'# Guest log {self.name} is not supported by the guest.'

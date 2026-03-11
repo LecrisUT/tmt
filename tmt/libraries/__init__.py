@@ -2,29 +2,19 @@
 Handle libraries
 """
 
-from typing import TYPE_CHECKING, Optional, Union
+import abc
+from typing import Optional
 
-import fmf
 import fmf.utils
 
-import tmt
 import tmt.log
 import tmt.utils
-from tmt.base import Dependency, DependencyFile, DependencyFmfId, DependencySimple
+from tmt.base.core import Dependency, DependencyFile, DependencyFmfId, DependencySimple
+from tmt.container import container
 from tmt.utils import Path
 
-if TYPE_CHECKING:
-    from tmt.libraries.beakerlib import BeakerLib
-    from tmt.libraries.file import File
-
-# A beakerlib identifier type, can be a string or a fmf id (with extra beakerlib keys)
-ImportedIdentifiersType = Optional[list[Dependency]]
-
-# A Library type, can be Beakerlib or File
-LibraryType = Union['BeakerLib', 'File']
-
 # A type for Beakerlib dependencies
-LibraryDependenciesType = tuple[list[Dependency], list[Dependency], list['LibraryType']]
+LibraryDependenciesType = tuple[list[Dependency], list[Dependency]]
 
 
 class LibraryError(Exception):
@@ -33,39 +23,96 @@ class LibraryError(Exception):
     """
 
 
-class Library:
+@container
+class Library(abc.ABC):
     """
     General library class
 
     Used as parent for specific libraries like beakerlib and file
     """
 
-    def __init__(
-        self,
+    # TODO: parent is actually guaranteed to be `DiscoverPlugin`, try to
+    #  narrow type it further.
+    #: The phase that requested the library as a dependency
+    parent: tmt.utils.Common
+    _logger: tmt.log.Logger
+    #: The original dependency requested
+    identifier: Dependency
+    # TODO: Should not be needed if Beakerlib rpm format is removed
+    #: Format of the library type requested
+    format: str
+    #: Name of the repository where the library came from
+    repo: Path
+    #: Fully-qualified name of the library (excluding the ``repo`` part).
+    #:
+    #: For example the name used in the ``rlImport`` command.
+    #: Must start with ``/``.
+    name: str
+
+    @classmethod
+    def from_identifier(
+        cls,
         *,
+        identifier: Dependency,
         parent: Optional[tmt.utils.Common] = None,
         logger: tmt.log.Logger,
-    ) -> None:
+        source_location: Optional[Path] = None,
+        target_location: Optional[Path] = None,
+    ) -> "Library":
         """
-        Process the library identifier and fetch the library
+        Factory function to get correct library instance
         """
+        # TODO: Remove the need for `source_location` and `target_location`?
+
+        from .beakerlib import BeakerLib
+        from .file import File
 
         # Use an empty common class if parent not provided (for logging, cache)
-        self.parent = parent or tmt.utils.Common(logger=logger, workdir=True)
-        self._logger: tmt.log.Logger = logger
+        # TODO: This should not be needed because parent is always DiscoverPlugin,
+        #  see callers of `dependencies`
+        parent = parent or tmt.utils.Common(logger=logger, workdir=True)
 
-        self.identifier: Dependency
-        self.format: str
-        self.repo: Path
-        self.name: str
+        if isinstance(identifier, (DependencySimple, DependencyFmfId)):
+            library = BeakerLib.from_identifier(
+                identifier=identifier,
+                parent=parent,
+                logger=logger,
+            )
 
-    @property
-    def hostname(self) -> str:
-        """
-        Get hostname from url or default to local
-        """
+        # File import
+        #
+        # ignore[reportUnnecessaryIsInstance]: pyright is correct, the test is not
+        # needed given the fact `Dependency` is a union of three types, and two were
+        # ruled out above. But we would like to check possible violations in runtime,
+        # therefore an `else` with an exception.
+        # ignore[unused-ignore]: silencing mypy's complaint about silencing
+        # pyright's warning :)
+        elif isinstance(identifier, DependencyFile):  # type: ignore[reportUnnecessaryIsInstance,unused-ignore]
+            assert source_location is not None
+            assert target_location is not None  # narrow type
+            library = File.from_identifier(
+                identifier=identifier,
+                parent=parent,
+                logger=logger,
+                source_location=source_location,
+                target_location=target_location,
+            )
 
-        return 'local'
+        # Something weird
+        else:
+            raise LibraryError
+
+        # Fetch the library
+        try:
+            library.fetch()
+        except fmf.utils.RootError as exc:
+            if isinstance(library, BeakerLib):
+                raise LibraryError(
+                    f"Repository '{library.identifier}' does not contain fmf metadata."
+                ) from exc
+            raise exc
+
+        return library
 
     @property
     def fmf_node_path(self) -> Path:
@@ -82,141 +129,97 @@ class Library:
 
         return f"{self.repo}{self.name}"
 
-
-def library_factory(
-    *,
-    identifier: Dependency,
-    parent: Optional[tmt.utils.Common] = None,
-    logger: tmt.log.Logger,
-    source_location: Optional[Path] = None,
-    target_location: Optional[Path] = None,
-) -> LibraryType:
-    """
-    Factory function to get correct library instance
-    """
-
-    from .beakerlib import BeakerLib
-    from .file import File
-
-    if isinstance(identifier, (DependencySimple, DependencyFmfId)):
-        library: LibraryType = BeakerLib(identifier=identifier, parent=parent, logger=logger)
-
-    # File import
-    #
-    # ignore[reportUnnecessaryIsInstance]: pyright is correct, the test is not
-    # needed given the fact `Dependency` is a union of three types, and two were
-    # ruled out above. But we would like to check possible violations in runtime,
-    # therefore an `else` with an exception.
-    # ignore[unused-ignore]: silencing mypy's complaint about silencing
-    # pyright's warning :)
-    elif isinstance(identifier, DependencyFile):  # type: ignore[reportUnnecessaryIsInstance,unused-ignore]
-        assert source_location is not None
-        assert target_location is not None  # narrow type
-        library = File(
-            identifier=identifier,
-            parent=parent,
-            logger=logger,
-            source_location=source_location,
-            target_location=target_location,
-        )
-
-    # Something weird
-    else:
-        raise LibraryError
-
-    # Fetch the library
-    try:
-        library.fetch()
-    except fmf.utils.RootError as exc:
-        if isinstance(library, BeakerLib):
-            raise tmt.utils.SpecificationError(
-                f"Repository '{library.url}' does not contain fmf metadata."
-            ) from exc
-        raise exc
-
-    return library
+    @abc.abstractmethod
+    def fetch(self) -> None:
+        """
+        Fetch the library from the source in the identifier.
+        """
+        raise NotImplementedError
 
 
-def dependencies(
+# TODO: Move this under the test or discover interface
+def resolve_dependencies(
     *,
     original_require: list[Dependency],
-    original_recommend: Optional[list[Dependency]] = None,
-    parent: Optional[tmt.utils.Common] = None,
-    imported_lib_ids: ImportedIdentifiersType = None,
+    original_recommend: list[Dependency],
+    parent: tmt.utils.Common,
     logger: tmt.log.Logger,
     source_location: Optional[Path] = None,
     target_location: Optional[Path] = None,
 ) -> LibraryDependenciesType:
     """
-    Check dependencies for possible beakerlib libraries
+    Resolve the ``require`` and ``recommend`` dependencies.
 
-    Fetch all identified libraries, check their required and recommended
-    packages. Return tuple (requires, recommends, libraries) containing
-    list of regular rpm package names aggregated from all fetched
-    libraries, list of aggregated recommended packages and a list of
-    gathered libraries (instances of the Library class).
+    For each library type encountered do the fetching, recursively resolve the
+    library's dependencies as well, and forward all of the package dependencies
+    that need to be processed by the ``PrepareInstall`` plugin.
 
-    Avoid infinite recursion by keeping track of imported library identifiers
-    and not trying to fetch those again.
+    The libraries are first processed from the ``require`` list and then from
+    the ``recommend`` list. Within each dependency list, each library's
+    dependencies are expanded first before moving to the next dependency on the
+    list.
+
+    When encountering duplicate beakerlib libraries, the first library that was
+    resolved takes precedence (this logic is defined in the
+    ``Beakerlib._do_fetch`` and the recursion order of this function). For
+    example, starting from the test's dependencies, the libraries can be
+    resolved as follows:
+
+    .. code-block::
+
+       /test:                          (1)
+         ├── library(A/lib)            (2)
+         ├── library(B/lib)            (3)
+         │   ├── library(A/lib)        (skipped, reuse (2))
+         │   └── library(C/lib)        (4)
+         └── library(C/lib)            (skipped, reuse (4))
+
     """
+    from .beakerlib import BeakerLib
 
-    # Initialize lists, use set for require & recommend
-    processed_require: set[Dependency] = set()
-    processed_recommend: set[Dependency] = set()
-    imported_lib_ids = imported_lib_ids or []
-    gathered_libraries: list[LibraryType] = []
-    original_require = original_require or []
-    original_recommend = original_recommend or []
-
-    # Cut circular dependencies to avoid infinite recursion
-    def already_fetched(lib: Dependency) -> bool:
-        if not imported_lib_ids:
-            return True
-        return lib not in imported_lib_ids
-
-    to_fetch = original_require + original_recommend
-    for dependency in filter(already_fetched, to_fetch):
-        # Library require/recommend
+    # TODO: These should actually be `set[DependencySimple]`
+    #  need more work detangling covariant/variant issues
+    require_to_install: set[Dependency] = set()
+    recommend_to_install: set[Dependency] = set()
+    for dependency in (*original_require, *original_recommend):
         try:
-            library = library_factory(
+            library = Library.from_identifier(
                 logger=logger,
                 identifier=dependency,
                 parent=parent,
                 source_location=source_location,
                 target_location=target_location,
             )
-            gathered_libraries.append(library)
-            imported_lib_ids.append(library.identifier)
-
-            from .beakerlib import BeakerLib
-
-            if isinstance(library, BeakerLib):
-                # Recursively check for possible dependent libraries
-                assert parent is not None  # narrow type
-                assert parent.workdir is not None  # narrow type
-                # TODO: make this one go away once fmf is properly annotated.
-                # pyright detects the type might be `Unknown` because of how
-                # fmf handles some corner cases, therefore `is not None` is
-                # not strong enough.
-                assert isinstance(library.tree.root, str)  # narrow type
-                requires, recommends, libraries = dependencies(
-                    original_require=library.require,
-                    original_recommend=library.recommend,
-                    parent=parent,
-                    imported_lib_ids=imported_lib_ids,
-                    logger=logger,
-                    source_location=library.source_directory,
-                    target_location=Path(library.tree.root),
-                )
-                processed_require.update(set(requires))
-                processed_recommend.update(set(recommends))
-                gathered_libraries.extend(libraries)
-        # Regular package require/recommend
         except LibraryError:
+            # Not a library, just a regular package to be installed
+            # TODO: This check is not robust at all, try handling the cases
+            #  explicitly outside of the try..except.
+            if not isinstance(dependency, DependencySimple):
+                logger.warning(f"Library '{dependency}' failed unexpectedly")
+                # TODO: we should not add these to the *_to_install, but currently
+                #  DiscoverPlugin.install_libraries handles the logging of unresolved
+                #  libraries in general.
             if dependency in original_require:
-                processed_require.add(dependency)
+                require_to_install.add(dependency)
             if dependency in original_recommend:
-                processed_recommend.add(dependency)
+                recommend_to_install.add(dependency)
+            continue
 
-    # Convert to list and return the results
-    return list(processed_require), list(processed_recommend), gathered_libraries
+        if isinstance(library, BeakerLib):
+            # Recursively expand the beakerlib library dependencies
+            assert isinstance(library.tree.root, str)  # narrow type
+            requires, recommends = resolve_dependencies(
+                original_require=library.require,
+                original_recommend=library.recommend,
+                # TODO: we could do some better logging if we keep track of where the dependency
+                #  came from (parent here could be library instead)
+                parent=parent,
+                logger=logger,
+                # For any FileLibrary dependency, put them in the appropriate path?
+                source_location=library.source_directory,
+                target_location=Path(library.tree.root),
+            )
+            require_to_install.update(requires)
+            recommend_to_install.update(recommends)
+
+    return list(require_to_install), list(recommend_to_install)

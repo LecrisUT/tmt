@@ -28,7 +28,7 @@ from tmt.utils import (
 )
 
 if TYPE_CHECKING:
-    import tmt.base
+    import tmt.base.core
 
 
 FILE_SCHEMA = 'file://'
@@ -459,7 +459,7 @@ def default_branch(
     return head.read_text().strip().split('/')[-1]
 
 
-def validate_git_status(test: 'tmt.base.Test') -> tuple[bool, str]:
+def validate_git_status(test: 'tmt.base.core.Test') -> tuple[bool, str]:
     """
     Validate that test has current metadata on fmf_id
 
@@ -727,6 +727,10 @@ def distgit_download(
             tmt.utils.url.download(url, target_dir / source_name, logger=logger)
 
 
+#: Tracker for known urls that failed to git clone
+NON_EXISTING_GIT_URL: set[str] = set()
+
+
 def git_clone(
     *,
     url: str,
@@ -789,6 +793,9 @@ def git_clone(
     if can_change:
         url = clonable_git_url(url)
 
+    if url in NON_EXISTING_GIT_URL:
+        raise tmt.utils.GitUrlError(f"Already know that '{url}' does not exist.")
+
     # Do an extra shallow clone first
     if shallow:
         try:
@@ -803,15 +810,19 @@ def git_clone(
             logger.debug(f"Shallow clone of '{url}' failed, let's try with the full history.")
 
     # Finish with whatever number attempts requested (deep)
-    return tmt.utils.retry(
-        func=clone_the_repo,
-        attempts=attempts,
-        interval=interval,
-        label=f"git clone {url} {destination}",
-        url=url,
-        destination=destination,
-        shallow=False,
-        env=env,
-        timeout=timeout,
-        logger=logger,
-    )
+    try:
+        return tmt.utils.retry(
+            func=clone_the_repo,
+            attempts=attempts,
+            interval=interval,
+            label=f"git clone {url} {destination}",
+            url=url,
+            destination=destination,
+            shallow=False,
+            env=env,
+            timeout=timeout,
+            logger=logger,
+        )
+    except tmt.utils.RetryError:
+        NON_EXISTING_GIT_URL.add(url)
+        raise

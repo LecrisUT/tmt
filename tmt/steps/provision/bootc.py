@@ -4,7 +4,6 @@ from typing import TYPE_CHECKING, Optional, cast
 import click
 
 import tmt
-import tmt.base
 import tmt.hardware
 import tmt.log
 import tmt.steps
@@ -60,7 +59,7 @@ class GuestBootc(GuestTestcloud):
     def __init__(
         self,
         *,
-        data: tmt.steps.provision.GuestData,
+        data: tmt.guest.GuestData,
         name: Optional[str] = None,
         parent: Optional[tmt.utils.Common] = None,
         logger: tmt.log.Logger,

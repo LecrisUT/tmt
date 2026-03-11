@@ -38,6 +38,7 @@ def _render_plugins_list_rest(logger: tmt.log.Logger) -> str:
         r'package_managers': 'Package manager plugins',
         r'plan_shapers': 'Plan shapers',
         r'prepare.feature': 'prepare/feature plugins',
+        r'prepare.install': 'prepare/install plugins',
         r'prepare.artifact.providers': 'prepare/artifact provider plugins',
         r'step\.([a-z]+)': '{{ MATCH.group(1).capitalize() }} step plugins',
     }
@@ -72,9 +73,7 @@ def _ls(context: Context, how: str, content: Any) -> None:
         )
 
     elif how in ('json', 'yaml'):
-        context.obj.print(
-            json.dumps(content) if how == 'json' else tmt.utils.dict_to_yaml(content)
-        )
+        context.obj.print(json.dumps(content) if how == 'json' else tmt.utils.to_yaml(content))
 
 
 @about.group(invoke_without_command=True, cls=CustomGroup)

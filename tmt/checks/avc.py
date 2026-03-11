@@ -23,9 +23,9 @@ from tmt.utils import (
 from tmt.utils.hints import hints_as_notes
 
 if TYPE_CHECKING:
-    import tmt.base
+    import tmt.base.core
+    from tmt.guest import Guest
     from tmt.steps.execute import TestInvocation
-    from tmt.steps.provision import Guest
 
 
 class TestMethod(enum.Enum):
@@ -70,6 +70,15 @@ DEFAULT_MESSAGE_TYPES = ['AVC', 'USER_AVC', 'SELINUX_ERR']
 
 #: Compiled regex pattern to match relevant AVC denial messages
 DENIAL_PATTERN = re.compile(rf"^type=(?:{'|'.join(map(re.escape, DEFAULT_MESSAGE_TYPES))})\b")
+
+#: Default list of patterns to be ignored
+DEFAULT_IGNORE_PATTERNS = [
+    re.compile(pattern)
+    for pattern in [
+        # Informative messages shown when policy is reloaded
+        r'type=USER_AVC.*received policyload notice',
+    ]
+]
 
 
 SETUP_SCRIPT = jinja2.Template(
@@ -133,8 +142,17 @@ def _run_script(
         shift: int = 2,
         level: int = 3,
         topic: Optional[tmt.log.Topic] = None,
+        stacklevel: int = 1,
     ) -> None:
-        logger.verbose(key=key, value=value, color=color, shift=shift, level=level, topic=topic)
+        logger.verbose(
+            key=key,
+            value=value,
+            color=color,
+            shift=shift,
+            level=level,
+            topic=topic,
+            stacklevel=stacklevel + 1,
+        )
 
     try:
         output = invocation.guest.execute(script, log=_output_logger, silent=True)
@@ -371,12 +389,13 @@ class AvcCheck(Check):
     )
 
     ignore_pattern: list[Pattern[str]] = field(
-        default_factory=list,
+        default_factory=lambda: DEFAULT_IGNORE_PATTERNS[:],
         help="""
              Optional list of regular expressions to ignore in AVC denials.
              If an AVC denial matches any of these patterns, it will be ignored
              and not cause a failure. Any other denials will still cause the test
-             to fail. If no patterns are specified, any denial will cause a failure.
+             to fail. By default, informative messages about policy reload are
+             ignored.
              """,
         metavar="PATTERN",
         normalize=tmt.utils.normalize_pattern_list,
@@ -447,18 +466,21 @@ class AvcDenials(CheckPlugin[AvcCheck]):
     def essential_requires(
         cls,
         guest: 'Guest',
-        test: 'tmt.base.Test',
+        test: 'tmt.base.core.Test',
         logger: tmt.log.Logger,
-    ) -> list['tmt.base.DependencySimple']:
+    ) -> list['tmt.base.core.DependencySimple']:
         if not guest.facts.has_selinux:
             return []
 
         # Avoid circular imports
-        import tmt.base
+        import tmt.base.core
 
         # Note: yes, this will most likely explode in any distro outside
         # of Fedora, CentOS and RHEL.
-        return [tmt.base.DependencySimple('audit'), tmt.base.DependencySimple('policycoreutils')]
+        return [
+            tmt.base.core.DependencySimple('audit'),
+            tmt.base.core.DependencySimple('policycoreutils'),
+        ]
 
     @classmethod
     def before_test(

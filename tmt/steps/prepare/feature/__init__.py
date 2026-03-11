@@ -5,18 +5,16 @@ import re
 from collections.abc import Iterator
 from typing import Any, Callable, Optional, cast
 
-import tmt
-import tmt.base
+import tmt.base.core
 import tmt.container
+import tmt.guest
 import tmt.log
-import tmt.options
 import tmt.steps
 import tmt.steps.prepare
-import tmt.steps.provision
 import tmt.utils
 from tmt.container import container
+from tmt.guest import Guest
 from tmt.plugins import PluginRegistry
-from tmt.steps.provision import Guest
 from tmt.utils import Path
 from tmt.utils.templates import render_template
 
@@ -388,7 +386,7 @@ class PrepareFeature(tmt.steps.prepare.PreparePlugin[PrepareFeatureData]):
 
         return outcome
 
-    def essential_requires(self) -> list[tmt.base.Dependency]:
+    def essential_requires(self) -> list[tmt.base.core.Dependency]:
         """
         Collect all essential requirements of the plugin.
 
@@ -398,4 +396,4 @@ class PrepareFeature(tmt.steps.prepare.PreparePlugin[PrepareFeatureData]):
         :returns: a list of requirements.
         """
 
-        return tmt.steps.provision.essential_ansible_requires()
+        return tmt.guest.essential_ansible_requires()

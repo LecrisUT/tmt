@@ -2,9 +2,8 @@
 Brew Artifact Provider
 """
 
-from collections.abc import Sequence
 from functools import cached_property
-from typing import Any, ClassVar, Optional
+from typing import Optional
 from urllib.parse import urljoin
 
 import tmt.log
@@ -33,8 +32,8 @@ class BrewArtifactProvider(KojiArtifactProvider):
         artifacts = provider.fetch_contents(guest, Path("/tmp"))
     """
 
-    def __init__(self, raw_provider_id: str, logger: tmt.log.Logger):
-        super().__init__(raw_provider_id, logger)
+    def __init__(self, raw_id: str, repository_priority: int, logger: tmt.log.Logger):
+        super().__init__(raw_id, repository_priority, logger)
         self._session = self._initialize_session(
             api_url="https://brewhub.engineering.redhat.com/brewhub",
             top_url="https://download.eng.bos.redhat.com/brew",
@@ -63,16 +62,16 @@ class BrewArtifactProvider(KojiArtifactProvider):
         return urljoin(self._top_url, path)
 
 
-@provides_artifact_provider("brew.build")  # type: ignore[arg-type]
+@provides_artifact_provider("brew.build")
 class BrewBuild(BrewArtifactProvider, KojiBuild):
     pass
 
 
-@provides_artifact_provider("brew.task")  # type: ignore[arg-type]
+@provides_artifact_provider("brew.task")
 class BrewTask(BrewArtifactProvider, KojiTask):
     pass
 
 
-@provides_artifact_provider("brew.nvr")  # type: ignore[arg-type]
+@provides_artifact_provider("brew.nvr")
 class BrewNvr(BrewArtifactProvider, KojiNvr):
     pass

@@ -15,7 +15,7 @@ description: |
 
     For tests shared across multiple components or product
     versions where required packages have different names it is
-    recommended to use the :ref:`/spec/plans/prepare` step
+    recommended to use the :tmt:story:`/spec/plans/prepare` step
     configuration to specify required packages for each component
     or product version individually.
 
@@ -29,13 +29,20 @@ description: |
     and define list of paths relative to the fmf root directory.
     These can be regular expressions to match multiple files or
     directories or just a single file or directory name. By
-    default everything under test :ref:`/spec/tests/path` is
+    default everything under test :tmt:story:`/spec/tests/path` is
     copied over to the system.
 
     By default, fetched repositories are stored in the discover
     step workdir under the ``libs`` directory. Use optional key
-    ``destination`` to choose a different location. The ``nick``
-    key can be used to override the default git repository name.
+    ``destination`` to choose a different location.
+
+    .. note::
+       :name: nick-usage
+
+       The name of the beakerlib library (the value used with
+       ``rlImport``) is taken as the last directory pointed by
+       ``url`` or ``path``. Use the ``nick`` key if you need
+       to override this.
 
     For debugging beakerlib libraries it is useful to reference
     the development version directly from the local filesystem.
@@ -48,6 +55,13 @@ description: |
 
     __ https://github.com/beakerlib/
     __ https://fmf.readthedocs.io/en/latest/concept.html#identifiers
+
+    .. versionadded:: 1.65
+       As a special handling when using ``type: library``, if both
+       ``url`` and ``path`` is omitted, the current test's tree is
+       used as the repo of the library. The ``nick`` key **must**
+       be set in this case (see :ref:`previous note<nick-usage>`
+       for what values to set for this)
 
 example:
   - |
@@ -74,6 +88,17 @@ example:
       - type: library
         url: https://github.com/beakerlib/openssl
         name: /certgen
+
+  - |
+    # The following would take the `certgen` library from the top
+    # level directory of the discovered `fmf` tree (the parent discover
+    #  phase that imports the current test) and place it as
+    # `libs/openssl/certgen` so that it could be imported using
+    # `rlImport openssl/certgen`:
+    require:
+      - type: library
+        name: /certgen
+        nick: openssl
 
   - |
     # Library from the local filesystem
@@ -107,7 +132,7 @@ example:
         pattern: /
 
 link:
-  - implemented-by: /tmt/base.py
+  - implemented-by: /tmt/base/core.py
   - implemented-by: /tmt/steps/discover
   - implemented-by: /tmt/steps/prepare
   - verified-by: /tests/prepare/require

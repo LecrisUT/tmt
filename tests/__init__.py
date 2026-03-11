@@ -1,8 +1,11 @@
-from collections.abc import Mapping, Sequence
-from typing import IO, Any, Optional, Union
+from collections.abc import Mapping
+from typing import IO, Any, Optional, Protocol, Union
 
 import click.core
 import click.testing
+
+import tmt.__main__
+import tmt.cli._root
 
 
 def reset_common() -> None:
@@ -19,36 +22,61 @@ def reset_common() -> None:
     accept CLI options are reset.
     """
 
-    from tmt.base import Core, Plan, Run, Story, Test, Tree
+    from tmt.base.core import Core, Run, Story, Test, Tree
+    from tmt.base.plan import Plan
     from tmt.utils import Common, MultiInvokableCommon
 
     for klass in (Core, Run, Tree, Test, Plan, Story, Common, MultiInvokableCommon):
         klass.cli_invocation = None
 
 
-class CliRunner(click.testing.CliRunner):
-    def invoke(
+class RunTmt(Protocol):
+    """
+    A type representing :py:meth:`CliRunner.invoke`.
+
+    Defined as a protocol because the method is available as a test
+    fixture, and it needs to have a type annotation.
+    """
+
+    def __call__(
         self,
-        cli: click.core.BaseCommand,
-        args: Optional[Union[str, Sequence[str]]] = None,
-        input: Optional[Union[str, bytes, IO]] = None,
+        *args: str,
+        command: Optional[click.BaseCommand] = None,
+        input: Optional[Union[str, bytes, IO[Any]]] = None,
         env: Optional[Mapping[str, Optional[str]]] = None,
         catch_exceptions: bool = True,
         color: bool = False,
-        **extra: Any,
+        **kwargs: Any,
+    ) -> click.testing.Result:
+        pass
+
+
+class CliRunner(click.testing.CliRunner):
+    def __init__(self) -> None:
+        super().__init__(charset='utf-8', echo_stdin=False)
+
+    def invoke(  # type: ignore[override]
+        self,
+        *args: str,
+        command: Optional[click.BaseCommand] = None,
+        input: Optional[Union[str, bytes, IO[Any]]] = None,
+        env: Optional[Mapping[str, Optional[str]]] = None,
+        catch_exceptions: bool = True,
+        color: bool = False,
+        **kwargs: Any,
     ) -> click.testing.Result:
         reset_common()
 
-        from tmt.__main__ import import_cli_commands
+        tmt.__main__.import_cli_commands()
 
-        import_cli_commands()
+        command = command or tmt.cli._root.main
 
         return super().invoke(
-            cli,
+            command,
             args=args,
             input=input,
             env=env,
             catch_exceptions=catch_exceptions,
             color=color,
-            **extra,
+            **kwargs,
         )

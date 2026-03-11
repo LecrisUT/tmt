@@ -8,6 +8,11 @@ to provision the environment for testing, for example:
 * :ref:`/plugins/provision/local`
 * :ref:`/plugins/provision/artemis`
 
+As part of the provision step it is also possible to specify
+detailed hardware requirements for the testing environment. See
+the :tmt:story:`/spec/hardware` specification section for details.
+
+
 .. _/plugins/provision/hard-reboot:
 
 Hard reboot
@@ -17,7 +22,7 @@ Hard reboot is not yet supported by all ``provision`` plugins, and
 therefore the following features may not work with plugins that
 lack the capability:
 
-* :ref:`restart-with-reboot</spec/tests/restart>` test key
+* :tmt:story:`restart-with-reboot</spec/tests/restart>` test key
 * :ref:`reboot</plugins/test-checks/watchdog>` action of the ``watchdog`` test check
 
 Following plugins fully implement hard reboot:

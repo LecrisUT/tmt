@@ -14,11 +14,10 @@ from typing import Any, Callable, Optional, TypedDict, TypeVar, Union, cast
 
 import packaging.version
 
-import tmt
 import tmt.config
+import tmt.guest
 import tmt.hardware
 import tmt.log
-import tmt.options
 import tmt.steps
 import tmt.steps.provision
 import tmt.utils
@@ -27,14 +26,12 @@ import tmt.utils.url
 import tmt.utils.wait
 from tmt.config.models.hardware import MrackTranslation
 from tmt.container import container, field, simple_field
-from tmt.steps.provision import RebootMode
+from tmt.guest import RebootMode
 from tmt.utils import (
     Command,
-    GuestLogError,
     Path,
     ProvisionError,
     ShellScript,
-    UpdatableMessage,
 )
 from tmt.utils.templates import render_template
 from tmt.utils.wait import Deadline, Waiting
@@ -325,7 +322,7 @@ def _transform_unsupported(constraint: tmt.hardware.Constraint) -> dict[str, Any
 def _get_registry_from_url(bootc_image_url: str) -> str:
     """Extract registry from image URL"""
     # Handle quay.io/repo/image:tag -> quay.io
-    return bootc_image_url.split('/')[0] if '/' in bootc_image_url else bootc_image_url
+    return bootc_image_url.split('/', maxsplit=1)[0] if '/' in bootc_image_url else bootc_image_url
 
 
 def _translate_constraint_by_config(
@@ -1011,16 +1008,9 @@ def import_and_load_mrack_deps(mrack_log: str, logger: tmt.log.Logger) -> None:
             if isinstance(transformed, MrackBaseHWElement):
                 transformed = transformed.to_mrack()
 
-            logger.debug('Transformed hardware', tmt.utils.dict_to_yaml(transformed))
+            logger.debug('Transformed hardware', tmt.utils.to_yaml(transformed))
 
-            # Mrack does not handle well situation when the filter
-            # consists of just a single filtering element, e.g. just
-            # `hostname`. In that case, the element is converted into
-            # XML element incorrectly. Therefore wrapping our filter
-            # with `<and/>` group, even if it has just a single child,
-            # it works around the problem.
-            # See https://github.com/teemtee/tmt/issues/3442
-            return {'hostRequires': MrackHWAndGroup(children=[transformed]).to_mrack()}
+            return {'hostRequires': transformed}
 
         def _requires_panic_watchdog(self, constraint: tmt.hardware.BaseConstraint) -> bool:
             """
@@ -1139,7 +1129,7 @@ def async_run(func: Any) -> Any:
 
 
 @container
-class BeakerGuestData(tmt.steps.provision.GuestSshData):
+class BeakerGuestData(tmt.guest.GuestSshData):
     # Guest request properties
     whiteboard: Optional[str] = field(
         default=None,
@@ -1337,6 +1327,10 @@ class CreateJobParameters:
             # see kickstart if it was just metadata.
             if kickstart:
                 data['beaker']['ks_append'] = kickstart
+
+        if self.beaker_job_owner:
+            data['beaker']['beaker_job_owner'] = self.beaker_job_owner
+
         if self.public_key:
             data['beaker']['pubkeys'] = self.public_key
         if self.beaker_job_group:
@@ -1438,7 +1432,7 @@ class BeakerAPI:
         return await self._mrack_provider.delete_host(self._bkr_job_id, None)
 
 
-class GuestBeaker(tmt.steps.provision.GuestSsh):
+class GuestBeaker(tmt.guest.GuestSsh):
     """
     Beaker guest instance
     """
@@ -1666,7 +1660,7 @@ class GuestBeaker(tmt.steps.provision.GuestSsh):
                 )
 
             if state == 'Reserved':
-                self.setup_logs(self._logger)
+                self.setup_logs(logger=self._logger)
 
                 return current
 
@@ -1722,7 +1716,7 @@ class GuestBeaker(tmt.steps.provision.GuestSsh):
         :returns: ``True`` if the reboot succeeded, ``False`` otherwise.
         """
 
-        waiting = waiting or tmt.steps.provision.default_reboot_waiting()
+        waiting = waiting or tmt.guest.default_reboot_waiting()
 
         if mode == RebootMode.HARD:
             self.debug("Hard reboot using the reboot command 'bkr system-power --action reboot'.")
@@ -1900,10 +1894,10 @@ class ProvisionBeaker(tmt.steps.provision.ProvisionPlugin[ProvisionBeakerData]):
 
 
 @container
-class GuestLogBeaker(tmt.steps.provision.GuestLog):
+class GuestLogBeaker(tmt.guest.GuestLog):
     guest: GuestBeaker
     url: str
 
-    def update(self, filepath: Path, logger: tmt.log.Logger) -> None:
-        with self.staging_file(filepath, logger) as staging_filepath:
+    def update(self, *, logger: tmt.log.Logger) -> None:
+        with self.staging_file(self.filepath, logger) as staging_filepath:
             tmt.utils.url.download(self.url, staging_filepath, logger=logger)

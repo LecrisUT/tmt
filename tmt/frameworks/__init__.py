@@ -5,10 +5,10 @@ import tmt.log
 import tmt.plugins
 import tmt.result
 import tmt.utils
-from tmt.steps.provision import TransferOptions
+from tmt.guest import TransferOptions
 
 if TYPE_CHECKING:
-    from tmt.base import DependencySimple, Test
+    from tmt.base.core import DependencySimple, Test
     from tmt.steps.execute import TestInvocation
 
 

@@ -1,14 +1,12 @@
-import contextlib
 import glob
 import re
 import shutil
-from typing import Any, Literal, Optional, cast
+from typing import Any, Optional, TypedDict, Union, cast
 
 import fmf
 
 import tmt
-import tmt.base
-import tmt.libraries
+import tmt.base.core
 import tmt.log
 import tmt.options
 import tmt.steps
@@ -16,72 +14,87 @@ import tmt.steps.discover
 import tmt.utils
 import tmt.utils.filesystem
 import tmt.utils.git
-import tmt.utils.url
-from tmt.base import _RawAdjustRule
-from tmt.container import container, field
+from tmt._compat.typing import Self
+from tmt.base.core import _RawAdjustRule
+from tmt.container import SerializableContainer, SpecBasedContainer, container, field
 from tmt.steps.prepare.distgit import insert_to_prepare_step
-from tmt.utils import Command, Environment, EnvVarValue, Path
+from tmt.utils import Command, NormalizationError, Path
 
 
-def normalize_ref(
+class _RawTestsWithAdjusts(TypedDict, total=False):
+    name: str
+
+
+@container
+class TestsWithAdjusts(
+    SpecBasedContainer[Union[str, _RawTestsWithAdjusts], Union[str, _RawTestsWithAdjusts]],
+    tmt.utils.NormalizeKeysMixin,
+    SerializableContainer,
+):
+    name: str
+
+    adjust_rule: Optional[_RawAdjustRule] = None
+
+    @classmethod
+    def from_spec(cls, spec: Union[str, _RawTestsWithAdjusts]) -> Self:
+        if isinstance(spec, str):
+            return cls(name=spec)
+        spec_copy = spec.copy()
+        name = spec_copy.pop("name")
+        return cls(name=name, adjust_rule=cast(_RawAdjustRule, spec_copy))
+
+    def to_spec(self) -> Union[str, _RawTestsWithAdjusts]:
+        if self.adjust_rule:
+            return _RawTestsWithAdjusts(
+                name=self.name,
+                **self.adjust_rule,  # type: ignore[typeddict-unknown-key]
+            )
+        return self.name
+
+
+def normalize_tests_with_adjusts(
     key_address: str,
-    value: Optional[Any],
+    value: Any,
     logger: tmt.log.Logger,
-) -> Optional[str]:
+) -> list[TestsWithAdjusts]:
+    def normalize_raw_item(raw_item: Any, index: Optional[int] = None) -> TestsWithAdjusts:
+        if isinstance(raw_item, TestsWithAdjusts):
+            return raw_item
+        if isinstance(raw_item, str):
+            return TestsWithAdjusts(name=raw_item)
+        problem_address = key_address
+        if index is not None:
+            problem_address = f'{problem_address}[{index}]'
+        if isinstance(raw_item, dict):
+            try:
+                name = raw_item.pop("name")
+            except KeyError as err:
+                raise NormalizationError(
+                    problem_address, raw_item, "a string or a dict with a key 'name'"
+                ) from err
+            return TestsWithAdjusts(name=name, adjust_rule=cast(_RawAdjustRule, raw_item))
+        raise NormalizationError(problem_address, raw_item, "a string or a dict with a key 'name'")
+
     if value is None:
-        return None
+        return []
 
-    if isinstance(value, str):
-        return value
+    if isinstance(value, (str, dict)):
+        return [normalize_raw_item(value)]
 
-    raise tmt.utils.NormalizationError(key_address, value, 'unset or a string')
+    if isinstance(value, (list, tuple)):
+        normalized_value: list[TestsWithAdjusts] = []
+
+        for i, raw_item in enumerate(value):
+            normalized_value.append(normalize_raw_item(raw_item, index=i))
+        return normalized_value
+
+    raise NormalizationError(
+        key_address, value, "a string, a dict or a list of strings or a dict with a key 'name'"
+    )
 
 
 @container
 class DiscoverFmfStepData(tmt.steps.discover.DiscoverStepData):
-    # Basic options
-    url: Optional[str] = field(
-        default=cast(Optional[str], None),
-        option=('-u', '--url'),
-        metavar='URL',
-        help="""
-            External URL containing the metadata tree.
-            Current git repository used by default.
-            See ``url-content-type`` key for details on what content is accepted.
-            """,
-    )
-
-    url_content_type: Literal["git", "archive"] = field(
-        default="git",
-        option="--url-content-type",
-        help="""
-            How to handle the ``url`` key.
-            """,
-        choices=("git", "archive"),
-    )
-
-    ref: Optional[str] = field(
-        default=cast(Optional[str], None),
-        option=('-r', '--ref'),
-        metavar='REVISION',
-        help="""
-            Branch, tag or commit specifying the desired git
-            revision. Defaults to the remote repository's default
-            branch if ``url`` was set or to the current ``HEAD``
-            of the current repository.
-
-            Additionally, one can set ``ref`` dynamically.
-            This is possible using a special file in tmt format
-            stored in the *default* branch of a tests repository.
-            This special file should contain rules assigning attribute ``ref``
-            in an *adjust* block, for example depending on a test run context.
-
-            Dynamic ``ref`` assignment is enabled whenever a test plan
-            reference has the format ``ref: @FILEPATH``.
-            """,
-        normalize=normalize_ref,
-    )
-
     path: Optional[str] = field(
         default=cast(Optional[str], None),
         option=('-p', '--path'),
@@ -94,7 +107,7 @@ class DiscoverFmfStepData(tmt.steps.discover.DiscoverStepData):
     )
 
     # Selecting tests
-    test: list[str] = field(
+    test: list[TestsWithAdjusts] = field(
         default_factory=list,
         option=('-t', '--test'),
         metavar='NAMES',
@@ -107,7 +120,11 @@ class DiscoverFmfStepData(tmt.steps.discover.DiscoverStepData):
             matching. See the :ref:`regular-expressions` section for
             details.
             """,
-        normalize=tmt.utils.normalize_string_list,
+        normalize=normalize_tests_with_adjusts,
+        serialize=lambda tests: [test.to_spec() for test in tests],
+        unserialize=lambda serialized_tests: [
+            TestsWithAdjusts.from_spec(serialized_test) for serialized_test in serialized_tests
+        ],
     )
 
     link: list[str] = field(
@@ -116,7 +133,7 @@ class DiscoverFmfStepData(tmt.steps.discover.DiscoverStepData):
         metavar="RELATION:TARGET",
         multiple=True,
         help="""
-            Select tests using the :ref:`/spec/core/link` keys.
+            Select tests using the :tmt:story:`/spec/core/link` keys.
             Values must be in the form of ``RELATION:TARGET``,
             tests containing at least one of them are selected.
             Regular expressions are supported for both relation
@@ -145,7 +162,7 @@ class DiscoverFmfStepData(tmt.steps.discover.DiscoverStepData):
         multiple=True,
         help="""
             Include only tests matching given regular expression.
-            Respect the :ref:`/spec/core/order` defined in test.
+            Respect the :tmt:story:`/spec/core/order` defined in test.
             The search mode is used for pattern matching. See the
             :ref:`regular-expressions` section for details.
             """,
@@ -265,7 +282,8 @@ class DiscoverFmfStepData(tmt.steps.discover.DiscoverStepData):
     )
 
     # Edit discovered tests
-    adjust_tests: Optional[list[_RawAdjustRule]] = field(
+    # Note: normalize_adjust returns a list as per its type hint
+    adjust_tests: list[_RawAdjustRule] = field(
         default_factory=list,
         normalize=tmt.utils.normalize_adjust,
         help="""
@@ -275,11 +293,19 @@ class DiscoverFmfStepData(tmt.steps.discover.DiscoverStepData):
     )
 
     # Upgrade plan path so the plan is not pruned
-    upgrade_path: Optional[str] = None
+    upgrade_path: Optional[str] = field(default=None, internal=True)
 
     # Legacy fields
-    repository: Optional[str] = None
-    revision: Optional[str] = None
+    repository: Optional[str] = field(
+        default=None,
+        option='--repository',
+        deprecated=tmt.options.Deprecated(since="1.66", hint="use 'url' instead"),
+    )
+    revision: Optional[str] = field(
+        default=None,
+        option='--revision',
+        deprecated=tmt.options.Deprecated(since="1.66", hint="use 'ref' instead"),
+    )
 
     def post_normalization(
         self,
@@ -394,7 +420,7 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
     The ``include`` key also allows to select tests by name, with two
     important distinctions from the ``test`` key:
 
-    * The original test :ref:`/spec/core/order` is preserved so it does
+    * The original test :tmt:story:`/spec/core/order` is preserved so it does
       not matter in which order tests are listed under the ``include``
       key.
 
@@ -409,6 +435,9 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
     matching patterns. See the :ref:`regular-expressions` section for
     detailed information about how exactly the regular expressions are
     handled.
+
+    The ``test`` key accepts a dict with at least a key ``name``. See
+    the ``Adjust Tests`` section for more info.
 
     Link Filter
     ^^^^^^^^^^^
@@ -439,7 +468,7 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
 
     The ``filter`` key can be used to apply an advanced filter based on
     test metadata attributes. These can be especially useful when tests
-    are grouped by the :ref:`/spec/core/tag` or :ref:`/spec/core/tier`
+    are grouped by the :tmt:story:`/spec/core/tag` or :tmt:story:`/spec/core/tier`
     keys:
 
     .. code-block:: yaml
@@ -503,18 +532,34 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
                 when: arch == i286
               - require~:
                   - '/python3.11/python3.12/'
+
+    You can also adjust individual test(s) using the form
+
+    .. code-block:: yaml
+
+       discover:
+           how: fmf
+           test:
+             - name: ^/test/one$
+               check+:
+                 - how: avc
+
+    Note that unlike the more generic ``adjust-tests``, only one adjust
+    rule is allowed. Everything except for the ``name`` key is treated as
+    the adjust rule, and are applied on top and at the end of any previous
+    rules defined with ``adjust-tests``.
     """
 
     _data_class = DiscoverFmfStepData
 
     # Options which require .git to be present for their functionality
-    _REQUIRES_GIT = (
+    _REQUIRES_GIT = {
         "ref",
         "modified_url",
         "modified_only",
         "fmf_id",
         "sync_repo",
-    )
+    }
 
     @property
     def is_in_standalone_mode(self) -> bool:
@@ -526,34 +571,66 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
             return True
         return super().is_in_standalone_mode
 
-    def get_git_root(self, directory: Path) -> Path:
-        """
-        Find git root of the path
-        """
+    def _fetch_remote_source(self, url: str) -> Optional[Path]:
+        super()._fetch_remote_source(url)
+        return Path(self.data.path) if self.data.path else None
 
-        output = self.run(
-            Command("git", "rev-parse", "--show-toplevel"),
-            cwd=directory,
-            ignore_dry=True,
-        )
-        assert output.stdout is not None
-        return Path(output.stdout.strip("\n"))
+    def _fetch_local_repository(self) -> Optional[Path]:
+        path = Path(self.data.path) if self.data.path else None
+        if path is not None:
+            fmf_root: Optional[Path] = path
+        else:
+            fmf_root = self.step.plan.fmf_root
 
-    def go(self, *, logger: Optional[tmt.log.Logger] = None) -> None:
+        requires_git = any(getattr(self.data, key) for key in self._REQUIRES_GIT)
+
+        # Path for distgit sources cannot be checked until
+        # they are extracted
+        if path and not path.is_dir() and not self.data.dist_git_source:
+            raise tmt.utils.DiscoverError(f"Provided path '{path}' is not a directory.")
+        if self.data.dist_git_source:
+            # Ensure we're in a git repo when extracting dist-git sources
+            if self.step.plan.fmf_root is None:
+                raise tmt.utils.DiscoverError("No git repository found for DistGit.")
+            git_root = tmt.utils.git.git_root(
+                fmf_root=self.step.plan.fmf_root, logger=self._logger
+            )
+            if not git_root:
+                raise tmt.utils.DiscoverError(f"{self.step.plan.fmf_root} is not a git repo")
+        else:
+            if fmf_root is None:
+                raise tmt.utils.DiscoverError("No metadata found in the current directory.")
+            # Check git repository root (use fmf root if not found)
+            git_root = tmt.utils.git.git_root(fmf_root=fmf_root, logger=self._logger)
+            if not git_root:
+                self.debug(f"Git root not found, using '{fmf_root}.'")
+                git_root = fmf_root
+            # Set path to relative path from the git root to fmf root
+            path = fmf_root.resolve().relative_to(
+                git_root.resolve() if requires_git else fmf_root.resolve()
+            )
+
+        # Copy the git/fmf root directory to test_dir
+        # (for dist-git case only when merge explicitly requested)
+        if requires_git:
+            directory: Path = git_root
+        else:
+            assert fmf_root is not None  # narrow type
+            directory = fmf_root
+        self.info('directory', directory, 'green')
+        if not self.data.dist_git_source or self.data.dist_git_merge:
+            self.debug(f"Copy '{directory}' to '{self.test_dir}'.")
+            if not self.is_dry_run:
+                tmt.utils.filesystem.copy_tree(directory, self.test_dir, self._logger)
+        return path
+
+    def go(self, *, path: Optional[Path] = None, logger: Optional[tmt.log.Logger] = None) -> None:
         """
         Discover available tests
         """
 
-        super().go(logger=logger)
+        super().go(path=path, logger=logger)
 
-        # Check url and path, prepare test directory
-        url = self.get('url')
-        # FIXME: cast() - typeless "dispatcher" method
-        path = Path(cast(str, self.get('path'))) if self.get('path') else None
-        # Save the test directory so that others can reference it
-        ref = self.get('ref')
-        self.testdir = self.phase_workdir / 'tests'
-        sourcedir = self.phase_workdir / 'source'
         dist_git_source = self.get('dist-git-source', False)
         dist_git_merge = self.get('dist-git-merge', False)
 
@@ -561,147 +638,54 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
         self._tests: list[tmt.Test] = []
 
         # Self checks
-        if dist_git_source and not dist_git_merge and (ref or url):
+        if dist_git_source and not dist_git_merge and (self.data.ref or self.data.url):
             raise tmt.utils.DiscoverError(
                 "Cannot manipulate with dist-git without the `--dist-git-merge` option."
             )
 
         self.log_import_plan_details()
 
-        # Clone provided git repository (if url given) with disabled
-        # prompt to ignore possibly missing or private repositories
-        if url:
-            self.info('url', url, 'green')
-            if self.data.url_content_type == "git":
-                self.debug(f"Clone '{url}' to '{self.testdir}'.")
-                # Shallow clone to speed up testing and
-                # minimize data transfers if ref is not provided
-                tmt.utils.git.git_clone(
-                    url=url,
-                    destination=self.testdir,
-                    shallow=ref is None,
-                    env=Environment({"GIT_ASKPASS": EnvVarValue("echo")}),
-                    logger=self._logger,
-                )
-                git_root = self.testdir
-            elif self.data.url_content_type == "archive":
-                archive_path = tmt.utils.url.download(
-                    url, self.phase_workdir, logger=logger or self._logger
-                )
-                self.debug(f"Extracting archive to '{self.testdir}'.")
-                shutil.unpack_archive(archive_path, self.testdir)
-                git_root = self.testdir
-            else:
-                raise ValueError(
-                    f"url-content-type has unsupported value: {self.data.url_content_type}"
-                )
-        # Copy git repository root to workdir
-        else:
-            if path is not None:
-                fmf_root: Optional[Path] = path
-            else:
-                fmf_root = Path(self.step.plan.fmf_root) if self.step.plan.fmf_root else None
-            requires_git = any(getattr(self.data, key) for key in self._REQUIRES_GIT)
-            # Path for distgit sources cannot be checked until the
-            # they are extracted
-            if path and not path.is_dir() and not dist_git_source:
-                raise tmt.utils.DiscoverError(f"Provided path '{path}' is not a directory.")
-            if dist_git_source:
-                # Ensure we're in a git repo when extracting dist-git sources
-                try:
-                    git_root = self.get_git_root(Path(self.step.plan.node.root))
-                except tmt.utils.RunError as error:
-                    assert self.step.plan.my_run is not None  # narrow type
-                    assert self.step.plan.my_run.tree is not None  # narrow type
-                    raise tmt.utils.DiscoverError(
-                        f"{self.step.plan.node.root} is not a git repo"
-                    ) from error
-            else:
-                if fmf_root is None:
-                    raise tmt.utils.DiscoverError("No metadata found in the current directory.")
-                # Check git repository root (use fmf root if not found)
-                try:
-                    git_root = self.get_git_root(fmf_root)
-                except tmt.utils.RunError:
-                    self.debug(f"Git root not found, using '{fmf_root}.'")
-                    git_root = fmf_root
-                # Set path to relative path from the git root to fmf root
-                path = fmf_root.resolve().relative_to(
-                    git_root.resolve() if requires_git else fmf_root.resolve()
-                )
-
-            # And finally copy the git/fmf root directory to testdir
-            # (for dist-git case only when merge explicitly requested)
-            if requires_git:
-                directory: Path = git_root
-            else:
-                assert fmf_root is not None  # narrow type
-                directory = fmf_root
-            self.info('directory', directory, 'green')
-            if not dist_git_source or dist_git_merge:
-                self.debug(f"Copy '{directory}' to '{self.testdir}'.")
-                if not self.is_dry_run:
-                    tmt.utils.filesystem.copy_tree(directory, self.testdir, self._logger)
-
-        # Prepare path of the dynamic reference
-        try:
-            ref = tmt.base.resolve_dynamic_ref(
-                logger=self._logger,
-                workdir=self.testdir,
-                ref=ref,
-                plan=self.step.plan,
-            )
-        except tmt.utils.FileError as error:
-            raise tmt.utils.DiscoverError("Could not resolve dynamic reference") from error
-
-        # Checkout revision if requested
-        if ref:
-            self.info('ref', ref, 'green')
-            self.debug(f"Checkout ref '{ref}'.")
-            self.run(Command('git', 'checkout', '-f', ref), cwd=self.testdir)
-
-        # Show current commit hash if inside a git repository
-        if self.testdir.is_dir():
-            with contextlib.suppress(tmt.utils.RunError, AttributeError):
-                self.verbose(
-                    'commit-hash',
-                    tmt.utils.git.git_hash(directory=self.testdir, logger=self._logger),
-                    'green',
-                )
-
         # Dist-git source processing during discover step
         if dist_git_source:
             try:
-                distgit_dir = self.testdir if ref else git_root
-                self.process_distgit_source(distgit_dir, sourcedir)
+                if self.data.url:
+                    fmf_root = self.test_dir
+                elif self.step.plan.fmf_root:
+                    fmf_root = self.step.plan.fmf_root
+                else:
+                    raise tmt.utils.DiscoverError("No git repository found.")
+
+                git_root = tmt.utils.git.git_root(fmf_root=fmf_root, logger=self._logger)
+                if not git_root:
+                    raise tmt.utils.DiscoverError(
+                        f"Directory '{fmf_root}' is not a git repository."
+                    )
+
+                distgit_dir = self.test_dir if self.data.ref else git_root
+                self.process_distgit_source(distgit_dir)
                 return
             except Exception as error:
                 raise tmt.utils.DiscoverError("Failed to process 'dist-git-source'.") from error
 
         # Discover tests
-        self.do_the_discovery(path)
+        self._tests = self.do_the_discovery(path)
 
-        # Apply tmt run policy
-        if self.step.plan.my_run is not None:
-            for policy in self.step.plan.my_run.policies:
-                policy.apply_to_tests(tests=self._tests, logger=self._logger)
-
-    def process_distgit_source(self, distgit_dir: Path, sourcedir: Path) -> None:
+    def process_distgit_source(self, distgit_dir: Path) -> None:
         """
         Process dist-git source during the discover step.
         """
 
         self.download_distgit_source(
             distgit_dir=distgit_dir,
-            target_dir=sourcedir,
+            target_dir=self.source_dir,
             handler_name=self.get('dist-git-type'),
         )
 
         # Copy rest of files so TMT_SOURCE_DIR has patches, sources and spec file
-        # FIXME 'worktree' could be used as sourcedir when 'url' is not set
+        # FIXME 'worktree' could be used as source_dir when 'url' is not set
         tmt.utils.filesystem.copy_tree(
             distgit_dir,
-            sourcedir,
+            self.source_dir,
             self._logger,
         )
 
@@ -713,55 +697,44 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
 
             insert_to_prepare_step(
                 discover_plugin=self,
-                sourcedir=sourcedir,
+                sourcedir=self.source_dir,
             )
 
         # merge or not, detect later
         self.step.plan.discover.extract_tests_later = True
         self.info("Tests will be discovered after dist-git patching in prepare.")
 
-    def do_the_discovery(self, path: Optional[Path] = None) -> None:
+    def do_the_discovery(self, path: Optional[Path] = None) -> list['tmt.base.core.Test']:
         """
         Discover the tests
         """
-
-        # Original path might adjusted already in go()
-        if path is None:
-            path = Path(cast(str, self.get('path'))) if self.get('path') else None
-        prune = self.get('prune')
-        # Adjust path and optionally show
-        if path is None or path.resolve() == Path.cwd().resolve():
-            path = Path('')
-        else:
-            self.info('path', path, 'green')
-
         # Prepare the whole tree path
-        tree_path = self.testdir / path.unrooted()
+        path = path or Path('')
+        tree_path = self.test_dir / path.unrooted()
         if not tree_path.is_dir() and not self.is_dry_run:
             raise tmt.utils.DiscoverError(f"Metadata tree path '{path}' not found.")
 
         # Show filters and test names if provided
         # Check the 'test --filter' option first, then from discover
-        filters = list(tmt.base.Test._opt('filters') or self.get('filter', []))
+        filters = list(tmt.base.core.Test._opt('filters') or self.get('filter', []))
         for filter_ in filters:
             self.info('filter', filter_, 'green')
         # Names of tests selected by --test option
-        names = self.get('test', [])
-        if names:
-            self.info('tests', fmf.utils.listed(names), 'green')
+        if self.data.test:
+            self.info('tests', fmf.utils.listed([test.name for test in self.data.test]), 'green')
 
         # Check the 'test --link' option first, then from discover
         # FIXME: cast() - typeless "dispatcher" method
         raw_link_needles = cast(list[str], tmt.Test._opt('links', []) or self.get('link', []))
         link_needles = [
-            tmt.base.LinkNeedle.from_spec(raw_needle) for raw_needle in raw_link_needles
+            tmt.base.core.LinkNeedle.from_spec(raw_needle) for raw_needle in raw_link_needles
         ]
 
         for link_needle in link_needles:
             self.info('link', str(link_needle), 'green')
 
-        excludes = list(tmt.base.Test._opt('exclude') or self.data.exclude)
-        includes = list(tmt.base.Test._opt('include') or self.data.include)
+        excludes = list(tmt.base.core.Test._opt('exclude') or self.data.exclude)
+        includes = list(tmt.base.core.Test._opt('include') or self.data.include)
 
         # Filter only modified tests if requested
         modified_only = self.get('modified-only')
@@ -775,21 +748,21 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
             self.debug(f"Fetch also '{modified_url}' as 'reference'.")
             self.run(
                 Command('git', 'remote', 'add', 'reference', modified_url),
-                cwd=self.testdir,
+                cwd=self.test_dir,
             )
             self.run(
                 Command('git', 'fetch', 'reference'),
-                cwd=self.testdir,
+                cwd=self.test_dir,
             )
         if modified_only:
             modified_ref = self.get(
                 'modified-ref',
-                tmt.utils.git.default_branch(repository=self.testdir, logger=self._logger),
+                tmt.utils.git.default_branch(repository=self.test_dir, logger=self._logger),
             )
             self.info('modified-ref', modified_ref, 'green')
             ref_commit = self.run(
                 Command('git', 'rev-parse', '--short', str(modified_ref)),
-                cwd=self.testdir,
+                cwd=self.test_dir,
             )
             assert ref_commit.stdout is not None
             self.verbose('modified-ref hash', ref_commit.stdout.strip(), 'green')
@@ -797,7 +770,7 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
                 Command(
                     'git', 'log', '--format=', '--stat', '--name-only', f"{modified_ref}..HEAD"
                 ),
-                cwd=self.testdir,
+                cwd=self.test_dir,
             )
             if output.stdout:
                 directories = [Path(name).parent for name in output.stdout.split('\n')]
@@ -806,103 +779,63 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
                 }
                 if not modified:
                     # Nothing was modified, do not select anything
-                    return
+                    return []
                 self.debug(f"Limit to modified test dirs: {modified}", level=3)
-                names.extend(modified)
+                self.data.test.extend(TestsWithAdjusts(name=name) for name in modified)
             else:
                 self.debug(f"No modified directories between '{modified_ref}..HEAD' found.")
                 # Nothing was modified, do not select anything
-                return
+                return []
 
         # Initialize the metadata tree, search for available tests
         self.debug(f"Check metadata tree in '{tree_path}'.")
         if self.is_dry_run:
-            return
+            return []
+        tests = []
         tree = tmt.Tree(
             logger=self._logger,
             path=tree_path,
             fmf_context=self.step.plan.fmf_context,
             additional_rules=self.data.adjust_tests,
         )
-        self._tests = tree.tests(
-            filters=filters,
-            names=names,
-            conditions=["manual is False"],
-            unique=False,
-            links=link_needles,
-            includes=includes,
-            excludes=excludes,
-        )
-
-        if prune:
-            # Save fmf metadata
-            clonedir = self.clone_dirpath / 'tests'
-            clone_tree_path = clonedir / path.unrooted()
-            for file_path in tmt.utils.filter_paths(tree_path, [r'\.fmf']):
-                tmt.utils.filesystem.copy_tree(
-                    file_path,
-                    clone_tree_path / file_path.relative_to(tree_path),
-                    self._logger,
+        if not self.data.test or not any(test.adjust_rule for test in self.data.test):
+            # - not test: we do not have any names filter (i.e. we take all tests)
+            # - not any(.adjust_rule): we do not have any tests with custom adjust
+            tests += tree.tests(
+                filters=filters,
+                names=[test.name for test in self.data.test],
+                conditions=["manual is False"],
+                unique=False,
+                links=link_needles,
+                includes=includes,
+                excludes=excludes,
+            )
+        else:
+            # We have at least one test with an adjust rule.
+            # In order to preserve the order and duplication defined in the fmf file,
+            # we need to resolve each test entry at a time
+            for test in self.data.test:
+                # Recalculate the adjusted tree only if necessary
+                if test.adjust_rule:
+                    adjusted_tree = tmt.Tree(
+                        logger=self._logger,
+                        path=tree_path,
+                        fmf_context=self.step.plan.fmf_context,
+                        additional_rules=[*self.data.adjust_tests, test.adjust_rule],
+                    )
+                else:
+                    # Original tree without adjustments
+                    adjusted_tree = tree
+                tests += adjusted_tree.tests(
+                    filters=filters,
+                    names=[test.name],
+                    conditions=["manual is False"],
+                    unique=False,
+                    links=link_needles,
+                    includes=includes,
+                    excludes=excludes,
                 )
-
-            # Save upgrade plan
-            upgrade_path = self.get('upgrade_path')
-            if upgrade_path:
-                upgrade_path = f"{upgrade_path.lstrip('/')}.fmf"
-                (clone_tree_path / upgrade_path).parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(tree_path / upgrade_path, clone_tree_path / upgrade_path)
-                shutil.copymode(tree_path / upgrade_path, clone_tree_path / upgrade_path)
-
-        # Prefix tests and handle library requires
-        for test in self._tests:
-            # Propagate `where` key
-            test.where = cast(tmt.steps.discover.DiscoverStepData, self.data).where
-
-            if prune:
-                # Save only current test data
-                assert test.path is not None  # narrow type
-                relative_test_path = test.path.unrooted()
-                tmt.utils.filesystem.copy_tree(
-                    tree_path / relative_test_path,
-                    clone_tree_path / relative_test_path,
-                    self._logger,
-                )
-
-                # Copy all parent main.fmf files
-                parent_dir = relative_test_path
-                while parent_dir.resolve() != Path.cwd().resolve():
-                    parent_dir = parent_dir.parent
-                    if (tree_path / parent_dir / 'main.fmf').exists():
-                        # Ensure parent directory exists
-                        (clone_tree_path / parent_dir).mkdir(parents=True, exist_ok=True)
-                        shutil.copyfile(
-                            tree_path / parent_dir / 'main.fmf',
-                            clone_tree_path / parent_dir / 'main.fmf',
-                        )
-
-            # Prefix test path with 'tests' and possible 'path' prefix
-            assert test.path is not None  # narrow type
-            test.path = Path('/tests') / path.unrooted() / test.path.unrooted()
-            # Check for possible required beakerlib libraries
-            if test.require or test.recommend:
-                test.require, test.recommend, _ = tmt.libraries.dependencies(
-                    original_require=test.require,
-                    original_recommend=test.recommend,
-                    parent=self,
-                    logger=self._logger,
-                    source_location=self.testdir,
-                    target_location=clonedir if prune else self.testdir,
-                )
-
-        if prune:
-            # Clean self.testdir and copy back only required tests and files from clonedir
-            # This is to have correct paths in tests
-            shutil.rmtree(self.testdir, ignore_errors=True)
-            tmt.utils.filesystem.copy_tree(clonedir, self.testdir, self._logger)
-
-        # Cleanup clone directories
-        if self.clone_dirpath.exists():
-            shutil.rmtree(self.clone_dirpath, ignore_errors=True)
+        return tests
 
     def post_dist_git(self, created_content: list[Path]) -> None:
         """
@@ -915,14 +848,12 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
         dist_git_merge = self.get('dist-git-merge', False)
         dist_git_remove_fmf_root = self.get('dist-git-remove-fmf-root', False)
 
-        sourcedir = self.phase_workdir / 'source'
-
         # '/' means everything which was extracted from the srpm and do not flatten
         # glob otherwise
         if dist_git_extract and dist_git_extract != '/':
             try:
                 dist_git_extract = Path(
-                    glob.glob(str(sourcedir / dist_git_extract.lstrip('/')))[0]
+                    glob.glob(str(self.source_dir / dist_git_extract.lstrip('/')))[0]
                 )
             except IndexError as error:
                 raise tmt.utils.DiscoverError(
@@ -931,7 +862,7 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
         if dist_git_init:
             if dist_git_extract == '/' or not dist_git_extract:
                 dist_git_extract = '/'
-                location = sourcedir
+                location = self.source_dir
             else:
                 location = dist_git_extract
             # User specified location or 'root' of extracted sources
@@ -940,8 +871,8 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
         elif dist_git_remove_fmf_root:
             try:
                 extracted_fmf_root = tmt.utils.find_fmf_root(
-                    sourcedir,
-                    ignore_paths=[sourcedir],
+                    self.source_dir,
+                    ignore_paths=[self.source_dir],
                 )[0]
             except tmt.utils.MetadataError:
                 self.warn("No fmf root to remove, there isn't one already.")
@@ -949,8 +880,10 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
                 shutil.rmtree((dist_git_extract or extracted_fmf_root) / '.fmf')
         if not dist_git_extract:
             try:
-                top_fmf_root = tmt.utils.find_fmf_root(sourcedir, ignore_paths=[sourcedir])[0]
-            except tmt.utils.MetadataError:
+                top_fmf_root = tmt.utils.find_fmf_root(
+                    self.source_dir, ignore_paths=[self.source_dir]
+                )[0]
+            except tmt.utils.MetadataError as error:
                 dist_git_extract = '/'  # Copy all extracted files as well (but later)
                 if not dist_git_merge:
                     self.warn(
@@ -959,43 +892,57 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
                         "explicit use of the '--dist-git-merge' option."
                     )
                     # FIXME - Deprecate this behavior?
-                    git_root = self.get_git_root(Path(self.step.plan.node.root))
-                    self.debug(f"Copy '{git_root}' to '{self.testdir}'.")
+                    git_root = tmt.utils.git.git_root(
+                        fmf_root=Path(self.step.plan.node.root), logger=self._logger
+                    )
+                    if not git_root:
+                        raise tmt.utils.DiscoverError(
+                            f"Directory '{self.step.plan.node.root}' is not in a git repository."
+                        ) from error
+                    self.debug(f"Copy '{git_root}' to '{self.test_dir}'.")
                     if not self.is_dry_run:
-                        tmt.utils.filesystem.copy_tree(git_root, self.testdir, self._logger)
+                        tmt.utils.filesystem.copy_tree(git_root, self.test_dir, self._logger)
 
-        # Copy extracted sources into testdir
+        # Copy extracted sources into test_dir
         if not self.is_dry_run:
             flatten = True
             if dist_git_extract == '/':
                 flatten = False
                 copy_these = created_content
             elif dist_git_extract:
-                copy_these = [dist_git_extract.relative_to(sourcedir)]
+                copy_these = [dist_git_extract.relative_to(self.source_dir)]
             else:
-                copy_these = [top_fmf_root.relative_to(sourcedir)]
+                copy_these = [top_fmf_root.relative_to(self.source_dir)]
             for to_copy in copy_these:
-                src = sourcedir / to_copy
+                src = self.source_dir / to_copy
                 if src.is_dir():
                     tmt.utils.filesystem.copy_tree(
-                        sourcedir / to_copy,
-                        self.testdir if flatten else self.testdir / to_copy,
+                        self.source_dir / to_copy,
+                        self.test_dir if flatten else self.test_dir / to_copy,
                         self._logger,
                     )
                 else:
-                    shutil.copyfile(src, self.testdir / to_copy)
+                    shutil.copyfile(src, self.test_dir / to_copy)
+
+        path = Path(cast(str, self.get('path'))) if self.get('path') else None
+        # Adjust path and optionally show
+        if path is None or path.resolve() == Path.cwd().resolve():
+            path = Path('')
+        else:
+            self.info('path', path, 'green')
 
         # Discover tests
-        self.do_the_discovery()
+        self._tests = self.do_the_discovery(path)
 
-        # Add TMT_SOURCE_DIR variable for each test
-        for test in self._tests:
-            test.environment['TMT_SOURCE_DIR'] = EnvVarValue(sourcedir)
+        if self.get('prune', False):
+            clone_dir = self.clone_dirpath / 'tests'
+            self.install_libraries(self.test_dir, clone_dir)
+            self.prune_tree(clone_dir, path)
+        else:
+            self.install_libraries(self.test_dir, self.test_dir)
 
-        # Apply tmt run policy
-        if self.step.plan.my_run is not None:
-            for policy in self.step.plan.my_run.policies:
-                policy.apply_to_tests(tests=self._tests, logger=self._logger)
+        self.adjust_test_attributes(path)
+        self.apply_policies()
 
         # Inject newly found tests into parent discover at the right position
         # FIXME
@@ -1007,8 +954,7 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
 
             test.name = f"{prefix}{test.name}"
             test.path = Path(f"/{self.safe_name}{test.path}")
-            # Update test environment with plan environment
-            test.environment.update(self.step.plan.environment)
+
             self.step.plan.discover._tests[self.name].append(test)
             test.serial_number = self.step.plan.draw_test_serial_number(test)
         self.step.save()

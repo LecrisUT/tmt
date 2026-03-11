@@ -12,7 +12,7 @@ story: 'As a user I want to execute tests easily'
             adjusted as needed without affecting or possibly
             breaking user environment such as laptop.
         link:
-          - implemented-by: /tmt/base.py
+          - implemented-by: /tmt/base/core.py
           - documented-by: /docs/examples.rst#run
           - documented-by: /docs/guide.rst
         example: tmt run
@@ -22,9 +22,9 @@ story: 'As a user I want to execute tests easily'
             As a tester I want to execute tests in the default
             environment without having to define a plan.
         description: |
-            Even if there are no :ref:`/spec/plans` defined it is
+            Even if there are no :tmt:story:`/spec/plans` defined it is
             still possible to execute tests and custom scripts. In
-            that case the default :ref:`/spec/plans` configuration
+            that case the default :tmt:story:`/spec/plans` configuration
             is applied and tests are executed using the ``shell``
             method.
 
@@ -53,7 +53,7 @@ story: 'As a user I want to execute tests easily'
                 execute:
                     how: tmt
         link:
-          - implemented-by: /tmt/base.py
+          - implemented-by: /tmt/base/core.py
           - verified-by: /tests/run/default
           - documented-by: /docs/examples.rst#run
 
@@ -61,7 +61,7 @@ story: 'As a user I want to execute tests easily'
     story: 'Select multiple steps to be executed'
 
     link:
-      - implemented-by: /tmt/base.py
+      - implemented-by: /tmt/base/core.py
       - verified-by: /tests/steps/select
       - documented-by: /docs/examples.rst#select-steps
 
@@ -110,7 +110,7 @@ story: 'As a user I want to execute tests easily'
             - tmt run plan --filter=FILTER
             - tmt run plan --condition=CONDITION
         link:
-          - implemented-by: /tmt/base.py
+          - implemented-by: /tmt/base/core.py
           - documented-by: /docs/examples.rst#select-plans
           - verified-by: /tests/plan/select
     /test:
@@ -121,7 +121,7 @@ story: 'As a user I want to execute tests easily'
             - tmt run test --condition=CONDITION
             - tmt run plan --name=NAME2 test --name=NAME1
         link:
-          - implemented-by: /tmt/base.py
+          - implemented-by: /tmt/base/core.py
           - documented-by: /docs/examples.rst#select-tests
           - verified-by: /tests/test/select
 
@@ -183,7 +183,7 @@ story: 'As a user I want to execute tests easily'
 
         Note that ``tmt`` saves last run id on each new execution.
     link:
-      - implemented-by: /tmt/base.py
+      - implemented-by: /tmt/base/core.py
       - documented-by: /docs/examples.rst#debug-tests
     example:
         - tmt run -l
@@ -245,6 +245,17 @@ story: 'As a user I want to execute tests easily'
             tmt run login --step execute --when fail
             tmt run login --step execute --when error
             tmt run login --step execute --when fail --when error
+
+    /test:
+        summary: 'Log in after each test execution'
+        story:
+            As a user I want to log into the guest after each test.
+        description:
+            Per-test login mode does not include the default step-level
+            login. Use ``--step`` to also login at a specific step.
+        example: |
+            tmt run login --test
+            tmt run login --test --step finish
 
     /experiment:
         summary: 'Provision an environment for experimenting'

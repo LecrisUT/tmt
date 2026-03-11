@@ -1,0 +1,29 @@
+name: Renovate
+
+on:
+  workflow_dispatch:
+  pull_request:
+  schedule:
+    # Weekly on Friday
+    - cron: 0 0 * * 5
+
+jobs:
+  renovate:
+    env:
+      LOG_LEVEL: debug
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Get GitHub App token
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RENOVATE_BOT_APP_ID }}
+          private-key: ${{ secrets.RENOVATE_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+      - uses: renovatebot/github-action@v44.2.0
+        with:
+          configurationFile: .github/renovate-config.json
+          token: '${{ steps.token.outputs.token }}'
+          renovate-image: ghcr.io/lecrisut/renovate-tmt
+          renovate-version: latest

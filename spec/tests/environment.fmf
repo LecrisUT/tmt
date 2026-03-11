@@ -10,7 +10,7 @@ description:
     part of the ``test`` attribute it makes sense to have a
     dedicated field for this, especially when the number of
     parameters grows. This might be useful for virtual test cases
-    as well. Plan :ref:`/spec/plans/environment` overrides test
+    as well. Plan :tmt:story:`/spec/plans/environment` overrides test
     environment. Must be a ``dictionary``.
 
 example: |
@@ -19,5 +19,5 @@ example: |
         PYTHON: python3.7
 
 link:
-  - implemented-by: /tmt/base.py
+  - implemented-by: /tmt/base/core.py
   - verified-by: /tests/core/environment

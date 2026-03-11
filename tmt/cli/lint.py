@@ -4,7 +4,8 @@
 
 from typing import Any, Optional, Union
 
-import tmt.base
+import tmt.base.core
+import tmt.base.plan
 import tmt.lint
 import tmt.log
 from tmt.cli import Context, pass_context
@@ -23,10 +24,10 @@ from tmt.cli._root import (
 
 def _apply_linters(
     lintable: Union[
-        tmt.lint.Lintable[tmt.base.Test],
-        tmt.lint.Lintable[tmt.base.Plan],
-        tmt.lint.Lintable[tmt.base.Story],
-        tmt.lint.Lintable[tmt.base.LintableCollection],
+        tmt.lint.Lintable[tmt.base.core.Test],
+        tmt.lint.Lintable[tmt.base.plan.Plan],
+        tmt.lint.Lintable[tmt.base.core.Story],
+        tmt.lint.Lintable[tmt.base.core.LintableCollection],
     ],
     linters: list[tmt.lint.Linter],
     failed_only: bool,
@@ -58,7 +59,7 @@ def _apply_linters(
 
 def _lint_class(
     context: Context,
-    klass: Union[type[tmt.base.Test], type[tmt.base.Plan], type[tmt.base.Story]],
+    klass: Union[type[tmt.base.core.Test], type[tmt.base.plan.Plan], type[tmt.base.core.Story]],
     failed_only: bool,
     enable_checks: list[str],
     disable_checks: list[str],
@@ -103,7 +104,9 @@ def _lint_class(
 
 def _lint_collection(
     context: Context,
-    klasses: list[Union[type[tmt.base.Test], type[tmt.base.Plan], type[tmt.base.Story]]],
+    klasses: list[
+        Union[type[tmt.base.core.Test], type[tmt.base.plan.Plan], type[tmt.base.core.Story]]
+    ],
     failed_only: bool,
     enable_checks: list[str],
     disable_checks: list[str],
@@ -121,13 +124,15 @@ def _lint_collection(
 
     exit_code = 0
 
-    linters = tmt.base.LintableCollection.resolve_enabled_linters(
+    linters = tmt.base.core.LintableCollection.resolve_enabled_linters(
         enable_checks=enable_checks or None,
         disable_checks=disable_checks or None,
     )
 
-    objs: list[tmt.base.Core] = [obj for cls in klasses for obj in cls.from_tree(context.obj.tree)]
-    lintable = tmt.base.LintableCollection(objs)
+    objs: list[tmt.base.core.Core] = [
+        obj for cls in klasses for obj in cls.from_tree(context.obj.tree)
+    ]
+    lintable = tmt.base.core.LintableCollection(objs)
 
     valid, allowed_rulings = _apply_linters(
         lintable, linters, failed_only, enforce_checks, outcomes
@@ -149,7 +154,9 @@ def _lint_collection(
 
 def do_lint(
     context: Context,
-    klasses: list[Union[type[tmt.base.Test], type[tmt.base.Plan], type[tmt.base.Story]]],
+    klasses: list[
+        Union[type[tmt.base.core.Test], type[tmt.base.plan.Plan], type[tmt.base.core.Story]]
+    ],
     list_checks: bool,
     failed_only: bool,
     enable_checks: list[str],
@@ -165,7 +172,9 @@ def do_lint(
 
     if list_checks:
         for klass in klasses:
-            klass_label = 'stories' if klass is tmt.base.Story else f'{klass.__name__.lower()}s'
+            klass_label = (
+                'stories' if klass is tmt.base.core.Story else f'{klass.__name__.lower()}s'
+            )
             logger.print(f'Linters available for {klass_label}')
             logger.print(klass.format_linters())
             logger.print()
@@ -229,7 +238,7 @@ def tests_lint(
 
     exit_code = do_lint(
         context,
-        [tmt.base.Test],
+        [tmt.base.core.Test],
         list_checks,
         failed_only,
         enable_checks,
@@ -270,7 +279,7 @@ def plans_lint(
 
     exit_code = do_lint(
         context,
-        [tmt.base.Plan],
+        [tmt.base.plan.Plan],
         list_checks,
         failed_only,
         enable_checks,
@@ -311,7 +320,7 @@ def stories_lint(
 
     exit_code = do_lint(
         context,
-        [tmt.base.Story],
+        [tmt.base.core.Story],
         list_checks,
         failed_only,
         enable_checks,
@@ -356,7 +365,7 @@ def lint(
 
     exit_code = do_lint(
         context,
-        [tmt.base.Test, tmt.base.Plan, tmt.base.Story],
+        [tmt.base.core.Test, tmt.base.plan.Plan, tmt.base.core.Story],
         list_checks,
         failed_only,
         enable_checks,

@@ -1,7 +1,6 @@
 import enum
 from typing import TYPE_CHECKING, Any, Callable, Optional, cast
 
-import fmf
 import fmf.utils
 
 import tmt.container
@@ -13,9 +12,9 @@ from tmt.utils import GeneralError, Path
 from tmt.utils.themes import style
 
 if TYPE_CHECKING:
-    import tmt.base
+    import tmt.base.core
+    import tmt.guest
     import tmt.steps.execute
-    import tmt.steps.provision
 
 
 class ResultOutcome(enum.Enum):
@@ -141,7 +140,7 @@ class ResultGuestData(SerializableContainer):
     primary_address: Optional[str] = None
 
     @classmethod
-    def from_guest(cls, *, guest: 'tmt.steps.provision.Guest') -> 'ResultGuestData':
+    def from_guest(cls, *, guest: 'tmt.guest.Guest') -> 'ResultGuestData':
         """
         Create a guest data for a result from a :py:class:`Guest` instance.
 
@@ -172,10 +171,10 @@ class ResultGuestData(SerializableContainer):
         return cls.from_guest(guest=invocation.guest)
 
 
-# This needs to be a stand-alone function because of the import of `tmt.base`.
+# This needs to be a stand-alone function because of the import of `tmt.base.core`.
 # It cannot be imported on module level because of circular dependency.
-def _unserialize_fmf_id(serialized: 'tmt.base._RawFmfId') -> 'tmt.base.FmfId':
-    from tmt.base import FmfId
+def _unserialize_fmf_id(serialized: 'tmt.base.core._RawFmfId') -> 'tmt.base.core.FmfId':
+    from tmt.base.core import FmfId
 
     return FmfId.from_spec(serialized)
 
@@ -326,8 +325,8 @@ class Result(BaseResult):
     """
 
     serial_number: int = 0
-    fmf_id: Optional['tmt.base.FmfId'] = field(
-        default=cast(Optional['tmt.base.FmfId'], None),
+    fmf_id: Optional['tmt.base.core.FmfId'] = field(
+        default=cast(Optional['tmt.base.core.FmfId'], None),
         serialize=lambda fmf_id: fmf_id.to_minimal_spec() if fmf_id is not None else {},
         unserialize=_unserialize_fmf_id,
     )
@@ -577,7 +576,7 @@ class Result(BaseResult):
         Return a nicely colored result with test name (and note)
         """
 
-        from tmt.steps.provision import format_guest_full_name
+        from tmt.guest import format_guest_full_name
 
         result = 'errr' if self.result == ResultOutcome.ERROR else self.result.value
 
@@ -666,11 +665,11 @@ def save_failures(
     path = directory / tmt.steps.execute.TEST_FAILURES_FILENAME
 
     try:
-        existing_failures = tmt.utils.yaml_to_list(invocation.phase.read(path))
+        existing_failures: list[str] = tmt.utils.yaml_to_list(invocation.phase.read(path))
     except tmt.utils.FileError:
         existing_failures = []
 
     existing_failures += failures
 
-    invocation.phase.write(path, tmt.utils.dict_to_yaml(existing_failures))
+    invocation.phase.write(path, tmt.utils.to_yaml(existing_failures))
     return path.relative_to(invocation.phase.step_workdir)

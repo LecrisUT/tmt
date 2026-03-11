@@ -234,13 +234,16 @@ class AptEngine(PackageManagerEngine):
         raise tmt.utils.GeneralError("There is no support for debuginfo packages in apt.")
 
 
-# ignore[type-arg]: TypeVar in package manager registry annotations is
-# puzzling for type checkers. And not a good idea in general, probably.
-@provides_package_manager('apt')  # type: ignore[arg-type]
+@provides_package_manager('apt')
 class Apt(PackageManager[AptEngine]):
     NAME = 'apt'
 
     _engine_class = AptEngine
+
+    # Compiled regex patterns for APT error messages
+    _FAILED_PACKAGE_INSTALLATION_PATTERNS = [
+        re.compile(r'(?:E:\s+)?Unable to locate package\s+([^\s]+)', re.IGNORECASE)
+    ]
 
     probe_command = Command('apt', '--version')
 
@@ -275,9 +278,22 @@ class Apt(PackageManager[AptEngine]):
 
         return results
 
+    def install_local(
+        self,
+        *installables: Installable,
+        options: Optional[Options] = None,
+    ) -> CommandOutput:
+
+        options = options or Options()
+        options.check_first = False
+        return self.install(*installables, options=options)
+
     def install_debuginfo(
         self,
         *installables: Installable,
         options: Optional[Options] = None,
     ) -> CommandOutput:
-        raise tmt.utils.GeneralError("There is no support for debuginfo packages in apt.")
+        raise tmt.utils.PrepareError(
+            f'Package manager "{self.guest.facts.package_manager}" does not support '
+            'installing debuginfo packages.'
+        )

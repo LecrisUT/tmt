@@ -1,18 +1,21 @@
+from collections.abc import Iterator
 from typing import Any, Optional, Union, cast
 
 import fmf.utils
 
-import tmt.base
+import tmt.base.core
+import tmt.base.plan
 import tmt.log
-import tmt.result
 import tmt.steps
-import tmt.steps.discover.fmf
-import tmt.steps.execute
-import tmt.steps.provision
 import tmt.utils
 from tmt.container import container, field, key_to_option
-from tmt.steps.discover import Discover, DiscoverPlugin, DiscoverStepData
-from tmt.steps.discover.fmf import DiscoverFmf, DiscoverFmfStepData, normalize_ref
+from tmt.steps.discover import Discover, DiscoverPlugin, DiscoverStepData, normalize_ref
+from tmt.steps.discover.fmf import (
+    DiscoverFmf,
+    DiscoverFmfStepData,
+    TestsWithAdjusts,
+    normalize_tests_with_adjusts,
+)
 from tmt.steps.execute import ExecutePlugin
 from tmt.steps.execute.internal import ExecuteInternal, ExecuteInternalData
 from tmt.steps.prepare import PreparePlugin
@@ -63,13 +66,17 @@ class ExecuteUpgradeData(ExecuteInternalData):
         help='Branch, tag or commit specifying the git revision.',
         normalize=normalize_ref,
     )
-    test: list[str] = field(
+    test: list[TestsWithAdjusts] = field(
         default_factory=list,
         option=('-t', '--test'),
         metavar='NAMES',
         multiple=True,
         help='Select tests by name.',
-        normalize=tmt.utils.normalize_string_list,
+        normalize=normalize_tests_with_adjusts,
+        serialize=lambda tests: [test.to_spec() for test in tests],
+        unserialize=lambda serialized_tests: [
+            TestsWithAdjusts.from_spec(serialized_test) for serialized_test in serialized_tests
+        ],
     )
     filter: list[str] = field(
         default_factory=list,
@@ -231,10 +238,36 @@ class ExecuteUpgrade(ExecuteInternal):
     def discover(self, plugin: Optional[DiscoverPlugin[DiscoverStepData]]) -> None:
         self._discover = plugin
 
+    @property
+    def tasks(
+        self,
+    ) -> Iterator[tuple[Optional[str], list['tmt.guest.Guest']]]:
+        # upgrade plugin is expected to execute multiple
+        # discover phases on old, perform the upgrade, then execute
+        # those same discover phases again on new. All of this should occur
+        # in a single task, so that the upgrade happens only once
+        # (due to how the upgrade plugin is currently structured).
+
+        # TODO: The logic for this plugin could be simplified if it were refactored to make
+        # the before upgrade self._run_test_phase() an execute task,
+        # the actual upgrade step an execute task,
+        # then the after upgrade self._run_test_phase() an execute task, all specified here.
+
+        # TODO: It would be nice if the discover_phase variable was a list instead of string,
+        # so that we could specify multiple discover phases to run, instead of all
+        # (by setting it to None) or a single specified one.
+        # Then we would not need to do the discover_phase shuffle in self._run_test_phase().
+
+        # Due to the above, we have to set discover_phase to None for now, which tells
+        # self._run_tests() to run all discover phases. This comes with the responsibility
+        # to later only run discover phases that are enabled for that guest, based on
+        # discover.enabled_by_when and discover.enabled_on_guest(guest) in self._run_test_phase().
+        yield (None, self.step.plan.provision.ready_guests)
+
     def go(
         self,
         *,
-        guest: 'tmt.steps.provision.Guest',
+        guest: 'tmt.guest.Guest',
         environment: Optional[tmt.utils.Environment] = None,
         logger: tmt.log.Logger,
     ) -> None:
@@ -277,19 +310,19 @@ class ExecuteUpgrade(ExecuteInternal):
             self.verbose('upgrade', 'run tests on the new system', color='blue', shift=1)
             self._run_test_phase(guest, AFTER_UPGRADE_PREFIX, logger)
 
-    def _get_plan(self, upgrades_repo: Path) -> tmt.base.Plan:
+    def _get_plan(self, upgrades_repo: Path) -> tmt.base.plan.Plan:
         """
         Get plan based on upgrade path
         """
 
-        tree = tmt.base.Tree(logger=self._logger, path=upgrades_repo)
+        tree = tmt.base.core.Tree(logger=self._logger, path=upgrades_repo)
         try:
             # We do not want to consider plan -n provided on the command line
             # in the remote repo for finding upgrade path.
-            tmt.base.Plan.ignore_class_options = True
+            tmt.base.plan.Plan.ignore_class_options = True
             plans = tree.plans(names=[self.upgrade_path])
         finally:
-            tmt.base.Plan.ignore_class_options = False
+            tmt.base.plan.Plan.ignore_class_options = False
 
         if len(plans) == 0:
             raise tmt.utils.ExecuteError(
@@ -327,7 +360,7 @@ class ExecuteUpgrade(ExecuteInternal):
 
         # Discover normally uses also options from global Test class
         # (e.g. test -n foo). Ignore this when selecting upgrade tasks.
-        tmt.base.Test.ignore_class_options = True
+        tmt.base.core.Test.ignore_class_options = True
 
         cli_invocation = self._discover_upgrade.cli_invocation
         if cli_invocation:
@@ -335,18 +368,20 @@ class ExecuteUpgrade(ExecuteInternal):
 
         try:
             self._discover_upgrade.wake()
-            self._discover_upgrade.go()
+            self.step.plan.discover.discover_tests(
+                cast(DiscoverPlugin[DiscoverStepData], self._discover_upgrade), logger=self._logger
+            )
 
         finally:
-            tmt.base.Test.ignore_class_options = False
+            tmt.base.core.Test.ignore_class_options = False
 
             if cli_invocation:
                 cli_invocation.options['quiet'] = quiet
 
     def _install_dependencies(
         self,
-        guest: tmt.steps.provision.Guest,
-        dependencies: list[tmt.base.DependencySimple],
+        guest: tmt.guest.Guest,
+        dependencies: list[tmt.base.core.DependencySimple],
         recommends: bool = False,
     ) -> None:
         """
@@ -366,7 +401,7 @@ class ExecuteUpgrade(ExecuteInternal):
             guest=guest, logger=self._logger
         )
 
-    def _prepare_remote_discover_data(self, plan: tmt.base.Plan) -> tmt.steps._RawStepData:
+    def _prepare_remote_discover_data(self, plan: tmt.base.plan.Plan) -> tmt.steps._RawStepData:
         """
         Merge remote discover data with the local filters
         """
@@ -400,7 +435,7 @@ class ExecuteUpgrade(ExecuteInternal):
 
         return remote_raw_data
 
-    def _perform_upgrade(self, guest: tmt.steps.provision.Guest, logger: tmt.log.Logger) -> None:
+    def _perform_upgrade(self, guest: tmt.guest.Guest, logger: tmt.log.Logger) -> None:
         """
         Perform a system upgrade
         """
@@ -413,14 +448,14 @@ class ExecuteUpgrade(ExecuteInternal):
             assert self._discover_upgrade is not None
             if self.upgrade_path:
                 # Create a fake discover from the data in the upgrade path
-                plan = self._get_plan(self._discover_upgrade.testdir)
+                plan = self._get_plan(self._discover_upgrade.test_dir)
                 data = self._prepare_remote_discover_data(plan)
                 # Unset `url` because we don't want discover step to perform clone. Instead,
                 # we want it to reuse existing, already cloned path.
                 # ignore[typeddict-unknown-key]: data is _RwStepData, we do not have more detailed
                 # type for raw step data of internal/upgrade plugins, it would be pretty verbose.
                 data['url'] = None  # type: ignore[typeddict-unknown-key]
-                data['path'] = self._discover_upgrade.testdir  # type:ignore[typeddict-unknown-key]
+                data['path'] = self._discover_upgrade.test_dir  # type:ignore[typeddict-unknown-key]
                 # FIXME: cast() - https://github.com/teemtee/tmt/issues/1599
                 self._discover_upgrade = cast(
                     DiscoverFmf, DiscoverPlugin.delegate(self.step, raw_data=data)
@@ -429,21 +464,21 @@ class ExecuteUpgrade(ExecuteInternal):
                 # Pass in the path-specific env variables
                 extra_environment = plan.environment
 
-            required_packages: list[tmt.base.DependencySimple] = []
-            recommended_packages: list[tmt.base.DependencySimple] = []
+            required_packages: list[tmt.base.core.DependencySimple] = []
+            recommended_packages: list[tmt.base.core.DependencySimple] = []
             for test_origin in self._discover_upgrade.tests(enabled=True):
                 test = test_origin.test
 
                 test.name = f'/{DURING_UPGRADE_PREFIX}/{test.name.lstrip("/")}'
 
                 # Gathering dependencies for upgrade tasks
-                required_packages += tmt.base.assert_simple_dependencies(
+                required_packages += tmt.base.core.assert_simple_dependencies(
                     test.require,
                     'After beakerlib processing, tests may have only simple requirements',
                     self._logger,
                 )
 
-                recommended_packages += tmt.base.assert_simple_dependencies(
+                recommended_packages += tmt.base.core.assert_simple_dependencies(
                     test.recommend,
                     'After beakerlib processing, tests may have only simple requirements',
                     self._logger,
@@ -462,9 +497,7 @@ class ExecuteUpgrade(ExecuteInternal):
             self._discover_upgrade = None
             self.discover_phase = original_discover_phase
 
-    def _run_test_phase(
-        self, guest: tmt.steps.provision.Guest, prefix: str, logger: tmt.log.Logger
-    ) -> None:
+    def _run_test_phase(self, guest: tmt.guest.Guest, prefix: str, logger: tmt.log.Logger) -> None:
         """
         Execute a single test phase on the guest
 
@@ -473,21 +506,41 @@ class ExecuteUpgrade(ExecuteInternal):
         The prefix is also set as IN_PLACE_UPGRADE environment variable.
         """
 
-        names_backup = []
-        for test_origin in self.discover.tests(enabled=True):
-            names_backup.append(test_origin.test.name)
-            test_origin.test.name = f'/{prefix}/{test_origin.test.name.lstrip("/")}'
+        # Backup the original discover phase, it should be None
+        original_discover_phase = self.discover_phase
 
-        self._run_tests(
-            guest=guest,
-            extra_environment=Environment({STATUS_VARIABLE: EnvVarValue(prefix)}),
-            logger=logger,
-        )
+        try:
+            # Run discover phases one at a time,
+            # only running phases that are enabled for this guest.
+            for discover in self.step.plan.discover.phases(classes=(DiscoverPlugin,)):
+                if discover.enabled_by_when and discover.enabled_on_guest(guest):
+                    self.discover_phase = discover.name
+
+                    test_name_backups: list[tuple[tmt.base.core.Test, str]] = []
+                    try:
+                        # Backup and modify test names for this discover phase
+                        for test_origin in self.discover.tests(
+                            phase_name=self.discover_phase, enabled=True
+                        ):
+                            test_name_backups.append((test_origin.test, test_origin.test.name))
+                            test_origin.test.name = (
+                                f'/{prefix}/{test_origin.test.name.lstrip("/")}'
+                            )
+
+                        self._run_tests(
+                            guest=guest,
+                            extra_environment=Environment({STATUS_VARIABLE: EnvVarValue(prefix)}),
+                            logger=logger,
+                        )
+
+                    finally:
+                        # Restore test names immediately after this phase
+                        for test, original_name in test_name_backups:
+                            test.name = original_name
+        finally:
+            self.discover_phase = original_discover_phase
 
         self._remove_old_results(prefix)
-
-        for i, test_origin in enumerate(self.discover.tests(enabled=True)):
-            test_origin.test.name = names_backup[i]
 
     def _remove_old_results(self, prefix: str) -> None:
         """

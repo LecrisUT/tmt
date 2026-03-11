@@ -1,12 +1,11 @@
 from typing import Optional
 
-import tmt
 import tmt.log
 import tmt.steps
 import tmt.steps.cleanup
 import tmt.utils
 from tmt.container import container
-from tmt.steps.provision import Guest
+from tmt.guest import Guest
 
 
 @container
@@ -44,9 +43,9 @@ class CleanupInternal(tmt.steps.cleanup.CleanupPlugin[CleanupInternalData]):
         if guest.is_ready:
             logger.debug(f"Fetch logs from guest '{guest.name}'.")
 
-            guest.update_logs(logger)
+            guest.update_logs(logger=logger)
 
-            guest.teardown_logs(logger)
+            guest.teardown_logs(logger=logger)
 
         # Stop the guest and remove it
         logger.debug(f"Stop and remove guest '{guest.name}'.")

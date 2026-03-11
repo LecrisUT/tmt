@@ -20,6 +20,7 @@ rlJournalStart
         rlAssertGrep "- name: /plan/context" $rlRun_LOG
         rlAssertGrep "- name: /plan/environment" $rlRun_LOG
         rlAssertGrep "- name: /plan/gate" $rlRun_LOG
+        rlAssertGrep "- name: /plan/extra-keys" $rlRun_LOG
         rlAssertGrep "discover:" $rlRun_LOG
         rlAssertGrep "execute:" $rlRun_LOG
         assert_internal_fields "$rlRun_LOG"
@@ -78,16 +79,19 @@ rlJournalStart
         rlAssertEquals "prepare script shall be an replaced" "$(yq '.[] | .prepare | .[] | .script' $rlRun_LOG)" "dummy-script"
     rlPhaseEnd
 
+    rlPhaseStartTest "tmt plan export /plan/extra-keys"
+        rlRun -s "tmt plan export /plan/extra-keys" 0 "Export plan with extra- keys"
+        rlAssertGrep "- name: /plan/extra-keys" $rlRun_LOG
+        rlAssertGrep "summary: Plan with extra- keys" $rlRun_LOG
+        rlAssertGrep "extra-reviewer: John Doe" $rlRun_LOG
+        rlAssertGrep "extra-jira-id: TMT-123" $rlRun_LOG
+        rlAssertGrep "extra-priority: high" $rlRun_LOG
+        assert_internal_fields "$rlRun_LOG"
+    rlPhaseEnd
+
     rlPhaseStartTest "Invalid format"
         rlRun -s "tmt plan export --how weird" 2
-
-        if rlIsRHELLike "=8"; then
-            # RHEL-8 and Centos stream 8 usually offer an older Click package that has slightly
-            # different wording & quotes.
-            rlAssertgrep "Error: Invalid value for \"-h\" / \"--how\": invalid choice: weird. (choose from dict, json, yaml)" $rlRun_LOG
-        else
-            rlAssertGrep "Error: Invalid value for '-h' / '--how': 'weird' is not one of 'dict', 'json', 'template', 'yaml'." $rlRun_LOG
-        fi
+        rlAssertGrep "Error: Invalid value for '-h' / '--how': 'weird' is not one of 'dict', 'json', 'template', 'yaml'." $rlRun_LOG
     rlPhaseEnd
 
     rlPhaseStartCleanup

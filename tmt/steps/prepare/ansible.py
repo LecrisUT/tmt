@@ -3,22 +3,20 @@ from typing import Optional, Union
 
 import requests
 
-import tmt
-import tmt.base
+import tmt.base.core
+import tmt.guest
 import tmt.log
 import tmt.steps
 import tmt.steps.prepare
-import tmt.steps.provision
 import tmt.utils
 from tmt.container import container, field
-from tmt.steps.provision import (
+from tmt.guest import (
     ANSIBLE_COLLECTION_PLAYBOOK_PATTERN,
     AnsibleApplicable,
     AnsibleCollectionPlaybook,
     Guest,
 )
 from tmt.utils import (
-    ENVFILE_RETRY_SESSION_RETRIES,
     Path,
     PrepareError,
     Stopwatch,
@@ -204,9 +202,7 @@ class PrepareAnsible(tmt.steps.prepare.PreparePlugin[PrepareAnsibleData]):
                 root_path = self.step_workdir
 
                 try:
-                    with retry_session(
-                        retries=ENVFILE_RETRY_SESSION_RETRIES, logger=logger
-                    ) as session:
+                    with retry_session(logger=logger) as session:
                         response = session.get(raw_playbook)
 
                     if not response.ok:
@@ -278,6 +274,7 @@ class PrepareAnsible(tmt.steps.prepare.PreparePlugin[PrepareAnsibleData]):
             if output is None:
                 return self._save_error_outcome(
                     label=playbook_name,
+                    timer=timer,
                     note='Command produced no output but raised no exception',
                     guest=guest,
                     outcome=outcome,
@@ -294,7 +291,7 @@ class PrepareAnsible(tmt.steps.prepare.PreparePlugin[PrepareAnsibleData]):
 
         return outcome
 
-    def essential_requires(self) -> list[tmt.base.Dependency]:
+    def essential_requires(self) -> list[tmt.base.core.Dependency]:
         """
         Collect all essential requirements of the plugin.
 
@@ -304,4 +301,4 @@ class PrepareAnsible(tmt.steps.prepare.PreparePlugin[PrepareAnsibleData]):
         :returns: a list of requirements.
         """
 
-        return tmt.steps.provision.essential_ansible_requires()
+        return tmt.guest.essential_ansible_requires()

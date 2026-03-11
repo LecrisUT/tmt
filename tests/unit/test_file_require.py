@@ -1,7 +1,6 @@
 import pytest
 
-import tmt
-import tmt.base
+import tmt.base.core
 import tmt.libraries
 import tmt.utils
 
@@ -12,10 +11,10 @@ def test_basic(root_logger, source_dir, target_dir):
     """
 
     parent = tmt.utils.Common(logger=root_logger, workdir=True)
-    tmt.libraries.library_factory(
+    tmt.libraries.Library.from_identifier(
         logger=root_logger,
         parent=parent,
-        identifier=tmt.base.DependencyFile(type='file', pattern=['lib.*']),
+        identifier=tmt.base.core.DependencyFile(type='file', pattern=['lib.*']),
         source_location=source_dir,
         target_location=target_dir,
     )
@@ -32,10 +31,10 @@ def test_full_copy(root_logger, source_dir, target_dir):
     """
 
     parent = tmt.utils.Common(logger=root_logger, workdir=True)
-    tmt.libraries.library_factory(
+    tmt.libraries.Library.from_identifier(
         logger=root_logger,
         parent=parent,
-        identifier=tmt.base.DependencyFile(type='file', pattern=['/']),
+        identifier=tmt.base.core.DependencyFile(type='file', pattern=['/']),
         source_location=source_dir,
         target_location=target_dir,
     )
@@ -48,11 +47,11 @@ def test_nothing_found(root_logger, source_dir, target_dir):
     """
 
     parent = tmt.utils.Common(logger=root_logger, workdir=True)
-    with pytest.raises(tmt.utils.MetadataError):
-        tmt.libraries.library_factory(
+    with pytest.raises(tmt.libraries.LibraryError):
+        tmt.libraries.Library.from_identifier(
             logger=root_logger,
             parent=parent,
-            identifier=tmt.base.DependencyFile(type='file', pattern=['/should/not/exist']),
+            identifier=tmt.base.core.DependencyFile(type='file', pattern=['/should/not/exist']),
             source_location=source_dir,
             target_location=target_dir,
         )

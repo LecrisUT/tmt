@@ -36,11 +36,13 @@ rlJournalStart
 
         if [ "$PROVISION_HOW" = "container" ]; then
             rlRun "IMAGES='$TEST_CONTAINER_IMAGES'"
+            rlRun "SECONDARY_IMAGES='$TEST_CONTAINER_IMAGES_SECONDARY'"
 
             build_container_images
 
         elif [ "$PROVISION_HOW" = "virtual" ]; then
             rlRun "IMAGES='$TEST_VIRTUAL_IMAGES'"
+            rlRun "SECONDARY_IMAGES='$TEST_VIRTUAL_IMAGES_SECONDARY'"
 
         else
             rlRun "IMAGES="
@@ -62,6 +64,14 @@ rlJournalStart
 
             if is_fedora_rawhide "$image"; then
                 rlRun "distro=fedora-rawhide"
+                rlRun "package_manager=dnf5"
+
+            elif is_fedora_eln "$image"; then
+                rlRun "distro=fedora-eln"
+                rlRun "package_manager=dnf5"
+
+            elif is_fedora_42 "$image"; then
+                rlRun "distro=fedora-42"
                 rlRun "package_manager=dnf5"
 
             elif is_fedora_43 "$image"; then
@@ -121,7 +131,9 @@ rlJournalStart
                 rlFail "Cannot infer distro for image $image"
             fi
 
-            tmt="tmt -vvv -c distro=$distro run --id $run --scratch cleanup discover provision --how $PROVISION_HOW --image $image prepare"
+            tmt_run="tmt -vvv -c distro=$distro run --id $run --scratch"
+            tmt_steps="cleanup discover provision --how $PROVISION_HOW --image $image prepare"
+            tmt="$tmt_run $tmt_steps"
         rlPhaseEnd
 
         # TODO: find out whether all those exceptions can be simplified and parametrized...
@@ -139,6 +151,11 @@ rlJournalStart
                 rlAssertGrep "summary: 2 preparations applied" $rlRun_LOG
             fi
         rlPhaseEnd
+
+        # Here the basic functionality check ends for the secondary distros.
+        if [[ "$SECONDARY_IMAGES" =~ "$image" ]]; then
+            continue
+        fi
 
         rlPhaseStartTest "$phase_prefix Install existing packages (CLI)"
             if is_ubi "$image"; then
@@ -225,33 +242,80 @@ rlJournalStart
             rlAssertGrep "package manager: $package_manager$" $rlRun_LOG
 
             if is_centos_7 "$image"; then
-                rlAssertGrep "out: no package provides tree-but-spelled-wrong" $rlRun_LOG
+                rlAssertGrep "stdout: no package provides tree-but-spelled-wrong" $rlRun_LOG
 
             elif is_ostree "$image"; then
                 if [ "$PROVISION_HOW" = "virtual" ]; then
-                    rlAssertGrep "err: No match for argument: tree-but-spelled-wrong" $rlRun_LOG
+                    rlAssertGrep "stderr: No match for argument: tree-but-spelled-wrong" $rlRun_LOG
                 else
-                    rlAssertGrep "err: error: Packages not found: tree-but-spelled-wrong" $rlRun_LOG
+                    rlAssertGrep "stderr: error: Packages not found: tree-but-spelled-wrong" $rlRun_LOG
                 fi
 
             elif is_fedora_coreos "$image"; then
-                rlAssertGrep "err: No match for argument: tree-but-spelled-wrong" $rlRun_LOG
+                rlAssertGrep "stderr: No match for argument: tree-but-spelled-wrong" $rlRun_LOG
 
             elif is_fedora_rawhide "$image"; then
-                rlAssertGrep "err: No match for argument: tree-but-spelled-wrong" $rlRun_LOG
+                rlAssertGrep "stderr: No match for argument: tree-but-spelled-wrong" $rlRun_LOG
+
+            elif is_fedora_eln "$image"; then
+                rlAssertGrep "stderr: No match for argument: tree-but-spelled-wrong" $rlRun_LOG
 
             elif is_fedora_43 "$image"; then
-                rlAssertGrep "err: No match for argument: tree-but-spelled-wrong" $rlRun_LOG
+                rlAssertGrep "stderr: No match for argument: tree-but-spelled-wrong" $rlRun_LOG
 
             elif is_ubuntu "$image" || is_debian "$image"; then
-                rlAssertGrep "err: E: Unable to locate package tree-but-spelled-wrong" $rlRun_LOG
+                rlAssertGrep "stderr: E: Unable to locate package tree-but-spelled-wrong" $rlRun_LOG
 
             elif is_alpine "$image"; then
-                rlAssertGrep "err:   tree-but-spelled-wrong (no such package)" $rlRun_LOG
+                rlAssertGrep "stderr:   tree-but-spelled-wrong (no such package)" $rlRun_LOG
 
             else
-                rlAssertGrep "err: Error: Unable to find a match: tree-but-spelled-wrong" $rlRun_LOG
+                rlAssertGrep "stderr: Error: Unable to find a match: tree-but-spelled-wrong" $rlRun_LOG
             fi
+
+	    rlAssertGrep "Other failed packages:" $rlRun_LOG
+	    rlAssertGrep "tree-but-spelled-wrong" $rlRun_LOG
+        rlPhaseEnd
+
+        rlPhaseStartTest "$phase_prefix Install existing and invalid packages (test)"
+            rlRun -s "$tmt plan --name /missing-from-test" 2
+
+            rlAssertGrep "package manager: $package_manager$" $rlRun_LOG
+
+            if is_centos_7 "$image"; then
+                rlAssertGrep "stdout: no package provides tree-but-spelled-wrong" $rlRun_LOG
+
+            elif is_ostree "$image"; then
+                if [ "$PROVISION_HOW" = "virtual" ]; then
+                    rlAssertGrep "stderr: No match for argument: tree-but-spelled-wrong" $rlRun_LOG
+                else
+                    rlAssertGrep "stderr: error: Packages not found: tree-but-spelled-wrong" $rlRun_LOG
+                fi
+
+            elif is_fedora_coreos "$image"; then
+                rlAssertGrep "stderr: No match for argument: tree-but-spelled-wrong" $rlRun_LOG
+
+            elif is_fedora_rawhide "$image"; then
+                rlAssertGrep "stderr: No match for argument: tree-but-spelled-wrong" $rlRun_LOG
+
+            elif is_fedora_eln "$image"; then
+                rlAssertGrep "stderr: No match for argument: tree-but-spelled-wrong" $rlRun_LOG
+
+            elif is_fedora_43 "$image"; then
+                rlAssertGrep "stderr: No match for argument: tree-but-spelled-wrong" $rlRun_LOG
+
+            elif is_ubuntu "$image" || is_debian "$image"; then
+                rlAssertGrep "stderr: E: Unable to locate package tree-but-spelled-wrong" $rlRun_LOG
+
+            elif is_alpine "$image"; then
+                rlAssertGrep "stderr:   tree-but-spelled-wrong (no such package)" $rlRun_LOG
+
+            else
+                rlAssertGrep "stderr: Error: Unable to find a match: tree-but-spelled-wrong" $rlRun_LOG
+            fi
+
+	    rlAssertGrep "Required packages failed to install, aborting:" $rlRun_LOG
+            rlAssertGrep "tree-but-spelled-wrong: required by: /test-with-invalid-package" $rlRun_LOG
         rlPhaseEnd
 
         rlPhaseStartTest "$phase_prefix Install existing and invalid packages (CLI)"
@@ -260,33 +324,38 @@ rlJournalStart
             rlAssertGrep "package manager: $package_manager$" $rlRun_LOG
 
             if is_centos_7 "$image"; then
-                rlAssertGrep "out: no package provides tree-but-spelled-wrong" $rlRun_LOG
+                rlAssertGrep "stdout: no package provides tree-but-spelled-wrong" $rlRun_LOG
 
             elif is_ostree "$image"; then
                 if [ "$PROVISION_HOW" = "virtual" ]; then
-                    rlAssertGrep "err: No match for argument: tree-but-spelled-wrong" $rlRun_LOG
+                    rlAssertGrep "stderr: No match for argument: tree-but-spelled-wrong" $rlRun_LOG
                 else
-                    rlAssertGrep "err: error: Packages not found: tree-but-spelled-wrong" $rlRun_LOG
+                    rlAssertGrep "stderr: error: Packages not found: tree-but-spelled-wrong" $rlRun_LOG
                 fi
 
             elif is_fedora_coreos "$image"; then
-                rlAssertGrep "err: No match for argument: tree-but-spelled-wrong" $rlRun_LOG
+                rlAssertGrep "stderr: No match for argument: tree-but-spelled-wrong" $rlRun_LOG
 
             elif is_fedora_rawhide "$image"; then
-                rlAssertGrep "err: No match for argument: tree-but-spelled-wrong" $rlRun_LOG
+                rlAssertGrep "stderr: No match for argument: tree-but-spelled-wrong" $rlRun_LOG
+
+            elif is_fedora_eln "$image"; then
+                rlAssertGrep "stderr: No match for argument: tree-but-spelled-wrong" $rlRun_LOG
 
             elif is_fedora_43 "$image"; then
-                rlAssertGrep "err: No match for argument: tree-but-spelled-wrong" $rlRun_LOG
+                rlAssertGrep "stderr: No match for argument: tree-but-spelled-wrong" $rlRun_LOG
 
             elif is_ubuntu "$image" || is_debian "$image"; then
-                rlAssertGrep "err: E: Unable to locate package tree-but-spelled-wrong" $rlRun_LOG
+                rlAssertGrep "stderr: E: Unable to locate package tree-but-spelled-wrong" $rlRun_LOG
 
             elif is_alpine "$image"; then
-                rlAssertGrep "err:   tree-but-spelled-wrong (no such package)" $rlRun_LOG
+                rlAssertGrep "stderr:   tree-but-spelled-wrong (no such package)" $rlRun_LOG
 
             else
-                rlAssertGrep "err: Error: Unable to find a match: tree-but-spelled-wrong" $rlRun_LOG
+                rlAssertGrep "stderr: Error: Unable to find a match: tree-but-spelled-wrong" $rlRun_LOG
             fi
+	    rlAssertGrep "Other failed packages:" $rlRun_LOG
+	    rlAssertGrep "tree-but-spelled-wrong" $rlRun_LOG
         rlPhaseEnd
 
         rlPhaseStartTest "$phase_prefix Empty prepare install with exclude"
@@ -306,9 +375,15 @@ rlJournalStart
                 rlPhaseEnd
             fi
 
-            rlPhaseStartTest "$phase_prefix Escape package names"
-                rlRun "$tmt execute plan --name escape"
-            rlPhaseEnd
+            if is_fedora_eln "$image"; then
+                rlPhaseStartTest "$phase_prefix Escape package names"
+                    rlRun "$tmt_run -e COPR_PLUGIN=\"dnf5-command(copr)\" -e COPR_PLUGIN_PACKAGE=\"dnf5-plugins\" $tmt_steps execute plan --name escape"
+                rlPhaseEnd
+            else
+                rlPhaseStartTest "$phase_prefix Escape package names"
+                    rlRun "$tmt_run -e COPR_PLUGIN=\"dnf-command(copr)\" -e COPR_PLUGIN_PACKAGE=\"dnf-plugins-core\" $tmt_steps execute plan --name escape"
+                rlPhaseEnd
+            fi
 
             if is_centos_7 "$image"; then
                 rlPhaseStartTest "$phase_prefix Install from epel7 copr"

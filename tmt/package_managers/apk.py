@@ -147,13 +147,17 @@ class ApkEngine(PackageManagerEngine):
         raise tmt.utils.GeneralError("There is no support for debuginfo packages in apk.")
 
 
-# ignore[type-arg]: TypeVar in package manager registry annotations is
-# puzzling for type checkers. And not a good idea in general, probably.
-@provides_package_manager('apk')  # type: ignore[arg-type]
+@provides_package_manager('apk')
 class Apk(PackageManager[ApkEngine]):
     NAME = 'apk'
 
     _engine_class = ApkEngine
+    # Compiled regex patterns for APK error messages
+    _FAILED_PACKAGE_INSTALLATION_PATTERNS = [
+        re.compile(r'unable to locate package\s+([^\s]+)', re.IGNORECASE),
+        re.compile(r'ERROR:\s+([^\s:]+):\s+No such package', re.IGNORECASE),
+        re.compile(r'([^\s]+)\s+\(no such package\):', re.IGNORECASE),
+    ]
 
     probe_command = Command('apk', '--version')
 
@@ -188,4 +192,27 @@ class Apk(PackageManager[ApkEngine]):
         *installables: Installable,
         options: Optional[Options] = None,
     ) -> CommandOutput:
-        raise tmt.utils.GeneralError("There is no support for debuginfo packages in apk.")
+        raise tmt.utils.PrepareError(
+            f'Package manager "{self.guest.facts.package_manager}" does not support '
+            'installing debuginfo packages.'
+        )
+
+    def install_local(
+        self,
+        *installables: Installable,
+        options: Optional[Options] = None,
+    ) -> CommandOutput:
+        options = options or Options()
+        options.allow_untrusted = True
+        options.check_first = False
+        return self.install(*installables, options=options)
+
+    def install_from_url(
+        self,
+        *installables: Installable,
+        options: Optional[Options] = None,
+    ) -> CommandOutput:
+        raise tmt.utils.PrepareError(
+            f'Package manager "{self.guest.facts.package_manager}" '
+            'does not support installing from a remote URL.'
+        )

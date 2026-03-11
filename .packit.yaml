@@ -114,21 +114,18 @@ _:
           - status | discuss
           - ci | skip
 
-  # Internal provisioning jobs
-  - &internal-provision
+  # Provisioning jobs
+  - &provision
     <<: *test-base
-    <<: *internal
     <<: *require-full-tests
+    targets:
+      - fedora-latest-stable
     tf_extra_params:
       environments:
         - tmt:
             context:
               how: provision
           <<: *tmt-cloud-resources
-    # Temporarily running these on F42 because tests started to break due to avc on F43
-    # TODO: Move revert this targets overwrite
-    targets:
-      - fedora-42
 
 jobs:
   # Build released bits to stable
@@ -171,12 +168,12 @@ jobs:
     tmt_plan: '/plans/features/extended-unit-tests$'
 
   # Test provision plugins
-  - <<: *internal-provision
-    identifier: 'provision:bootc'
+  - <<: *provision
+    identifier: provision-bootc
     tmt_plan: /plans/provision/bootc
 
-  - <<: *internal-provision
-    identifier: 'provision:virtual'
+  - <<: *provision
+    identifier: provision-virtual
     tmt_plan: /plans/provision/virtual
 
   # Test internal plugins

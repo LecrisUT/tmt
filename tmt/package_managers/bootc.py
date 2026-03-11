@@ -1,9 +1,10 @@
-import json
 import re
 import uuid
-from typing import Any, Optional, cast
+from collections.abc import Iterator
+from typing import Any, Optional
 
 import tmt.utils
+from tmt.container import PYDANTIC_V1, ConfigDict, MetadataContainer
 from tmt.package_managers import (
     Installable,
     Options,
@@ -21,6 +22,42 @@ from tmt.utils import (
 )
 
 LOCALHOST_BOOTC_IMAGE_PREFIX = "localhost/tmt"
+
+
+class BootcMetadataContainer(MetadataContainer):
+    """
+    Metadata container for bootc images.
+    References the official bootc host v1 JSON schema(https://bootc-dev.github.io/bootc/host-v1.schema.json).
+    This is a minimal version only including relevant fields for tmt.
+    """
+
+    if PYDANTIC_V1:
+
+        class Config(MetadataContainer.Config):
+            # Allow unknown fields to support schema extensions and newer bootc versions
+            extra = "allow"
+    else:
+        model_config = ConfigDict(extra="allow")
+
+
+class ImageReference(BootcMetadataContainer):
+    image: str
+
+
+class ImageStatus(BootcMetadataContainer):
+    image: ImageReference
+
+
+class BootEntry(BootcMetadataContainer):
+    image: Optional[ImageStatus] = None
+
+
+class HostStatus(BootcMetadataContainer):
+    booted: Optional[BootEntry] = None
+
+
+class BootcHost(BootcMetadataContainer):
+    status: Optional[HostStatus] = None
 
 
 class BootcEngine(PackageManagerEngine):
@@ -67,40 +104,33 @@ class BootcEngine(PackageManagerEngine):
 
         command, _ = self.prepare_command()
         command += Command('status', '--json')
-        output = self.guest.execute(command, silent=True)
 
-        if not output.stdout:
+        if not (output := self.guest.execute(command, silent=True).stdout):
             raise tmt.utils.PrepareError("Failed to get current bootc status: empty output.")
 
         try:
-            image_status = json.loads(output.stdout)
-        except json.JSONDecodeError as error:
+            host = BootcHost.from_json(output)
+        except tmt.utils.SpecificationError as error:
             raise tmt.utils.PrepareError("Failed to parse bootc status JSON.") from error
 
-        if not image_status:
-            raise tmt.utils.PrepareError("Failed to get current bootc status: empty JSON.")
+        if (status := host.status) is None:
+            raise tmt.utils.PrepareError("Missing 'status' key in bootc output.")
 
-        # Extract nested information with clear error messages for each missing key
-        try:
-            booted = image_status.get('status', {}).get('booted', {})
-            if not booted:
-                raise KeyError("'booted' key")
+        if (booted := status.booted) is None:
+            raise tmt.utils.PrepareError("Missing 'booted' key in bootc status.")
 
-            image_info = booted.get('image')
-            if not image_info:
-                raise KeyError("'image' key in booted status")
+        if (image_status := booted.image) is None:
+            raise tmt.utils.PrepareError("Missing 'image' key in bootc booted entry.")
 
-            image_data = image_info.get('image', {})
-
-            base_image = cast(str, image_data.get('image', ''))
-            if not base_image:
-                raise KeyError("'image' name in image data")
-
-            return base_image
-        except KeyError as error:
-            raise tmt.utils.PrepareError("Failed to extract bootc image info.") from error
+        return image_status.image.image
 
     def _get_base_containerfile_directives(self) -> list[str]:
+        # In dry run mode, return an empty list because _get_current_bootc_image()
+        # would fail - it executes a command on the guest. The build is skipped
+        # anyway via the dry-run guard in build_container().
+        if self.guest.is_dry_run:
+            return []
+
         bootc_image = self._get_current_bootc_image()
 
         if bootc_image.startswith(LOCALHOST_BOOTC_IMAGE_PREFIX):
@@ -152,9 +182,7 @@ class BootcEngine(PackageManagerEngine):
         return script
 
 
-# ignore[type-arg]: TypeVar in package manager registry annotations is
-# puzzling for type checkers. And not a good idea in general, probably.
-@provides_package_manager('bootc')  # type: ignore[arg-type]
+@provides_package_manager('bootc')
 class Bootc(PackageManager[BootcEngine]):
     NAME = 'bootc'
 
@@ -167,6 +195,9 @@ class Bootc(PackageManager[BootcEngine]):
 
     # Needs to be bigger than priorities of `yum`, `dnf`, `dnf5` and `rpm-ostree`.
     probe_priority = 130
+
+    def extract_package_name_from_package_manager_output(self, output: str) -> Iterator[str]:
+        return self.guest.bootc_builder.extract_package_name_from_package_manager_output(output)
 
     def check_presence(self, *installables: Installable) -> dict[Installable, bool]:
         script = self.engine.check_presence(*installables)
@@ -198,10 +229,14 @@ class Bootc(PackageManager[BootcEngine]):
 
         return results
 
-    def build_container(self) -> None:
+    def build_container(self) -> Optional[CommandOutput]:
+        # Skip in dry run mode
+        if self.guest.is_dry_run:
+            return None
+
         if not self.engine.containerfile_directives:
             self.debug("No Containerfile directives to build container image, skipping build.")
-            return
+            return None
 
         image_tag = f"{LOCALHOST_BOOTC_IMAGE_PREFIX}/bootc/{uuid.uuid4()}"
 
@@ -240,9 +275,11 @@ class Bootc(PackageManager[BootcEngine]):
 
                 assert self.guest.parent is not None
 
-                self.guest.execute(
+                # Mount run_workdir so scripts have access to tmt files during build.
+                # Use :Z for SELinux private label.
+                build_output = self.guest.execute(
                     ShellScript(
-                        f'{self.guest.facts.sudo_prefix} podman build -t {image_tag} -f {containerfile_path} {self.guest.step_workdir}'  # noqa: E501
+                        f'{self.guest.facts.sudo_prefix} podman build -v {self.guest.run_workdir}:{self.guest.run_workdir}:Z -t {image_tag} -f {containerfile_path} {self.guest.run_workdir}'  # noqa: E501
                     )
                 )
 
@@ -257,6 +294,8 @@ class Bootc(PackageManager[BootcEngine]):
                 self.info("package", "rebooting to apply new image", "green")
                 self.guest.reboot()
 
+                return build_output
+
             finally:
                 # Reset containerfile directives
                 self.engine.flush_containerfile_directives()
@@ -264,8 +303,7 @@ class Bootc(PackageManager[BootcEngine]):
     def refresh_metadata(self) -> CommandOutput:
         self.engine.refresh_metadata()
 
-        self.build_container()
-        return CommandOutput(stdout=None, stderr=None)
+        return self.build_container() or CommandOutput(stdout=None, stderr=None)
 
     def install(
         self,
@@ -280,7 +318,7 @@ class Bootc(PackageManager[BootcEngine]):
 
         if missing_installables:
             self.engine.install(*missing_installables, options=options)
-            self.build_container()
+            return self.build_container() or CommandOutput(stdout=None, stderr=None)
 
         return CommandOutput(stdout=None, stderr=None)
 
@@ -291,8 +329,7 @@ class Bootc(PackageManager[BootcEngine]):
     ) -> CommandOutput:
         self.engine.reinstall(*installables, options=options)
 
-        self.build_container()
-        return CommandOutput(stdout=None, stderr=None)
+        return self.build_container() or CommandOutput(stdout=None, stderr=None)
 
     def install_debuginfo(
         self,
@@ -300,6 +337,52 @@ class Bootc(PackageManager[BootcEngine]):
         options: Optional[Options] = None,
     ) -> CommandOutput:
         self.engine.install_debuginfo(*installables, options=options)
-
-        self.build_container()
         return CommandOutput(stdout=None, stderr=None)
+
+    def install_from_repository(
+        self,
+        *installables: Installable,
+        options: Optional[Options] = None,
+    ) -> CommandOutput:
+
+        # Check presence to avoid unnecessary container rebuilds
+        presence = self.check_presence(*installables)
+
+        missing_installables = {i for i, present in presence.items() if not present}
+        if missing_installables:
+            self.engine.install(*missing_installables, options=options)
+
+        return CommandOutput(stdout=None, stderr=None)
+
+    def install_from_url(
+        self,
+        *installables: Installable,
+        options: Optional[Options] = None,
+    ) -> CommandOutput:
+
+        presence = self.check_presence(*installables)
+
+        missing_installables = {i for i, present in presence.items() if not present}
+        if missing_installables:
+            self.engine.install(*missing_installables, options=options)
+
+        return CommandOutput(stdout=None, stderr=None)
+
+    def install_local(
+        self,
+        *installables: Installable,
+        options: Optional[Options] = None,
+    ) -> CommandOutput:
+
+        options = options or Options()
+        options.check_first = False
+        self.engine.install(*installables, options=options)
+        self.engine.reinstall(*installables, options=options)
+
+        return CommandOutput(stdout=None, stderr=None)
+
+    def finalize_installation(self) -> CommandOutput:
+        """
+        Coordinate installation process through containerfile building and switching
+        """
+        return self.build_container() or CommandOutput(stdout=None, stderr=None)

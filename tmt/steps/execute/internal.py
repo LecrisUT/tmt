@@ -1,36 +1,25 @@
-import os
-import textwrap
+from collections.abc import Iterator
 from typing import Any, Optional, cast
 
-import jinja2
-
-import tmt
-import tmt.base
+import tmt.base.core
 import tmt.log
-import tmt.options
 import tmt.steps
 import tmt.steps.execute
-import tmt.steps.scripts
 import tmt.utils
 import tmt.utils.signals
 import tmt.utils.themes
+import tmt.utils.wait
 from tmt.container import container, field
+from tmt.guest import DEFAULT_PULL_OPTIONS, Guest
 from tmt.result import Result, ResultOutcome
-from tmt.steps import safe_filename
 from tmt.steps.context.abort import AbortStep
 from tmt.steps.discover import DiscoverPlugin
 from tmt.steps.execute import (
     TEST_OUTPUT_FILENAME,
     TestInvocation,
 )
-from tmt.steps.provision import DEFAULT_PULL_OPTIONS, Guest, TransferOptions
 from tmt.steps.report.display import ResultRenderer
-from tmt.utils import (
-    Environment,
-    EnvVarValue,
-    Path,
-    ShellScript,
-)
+from tmt.utils import Environment, ShellScript
 from tmt.utils.themes import style
 
 #
@@ -169,12 +158,12 @@ class ExecuteInternalData(tmt.steps.execute.ExecuteStepData):
             Execute arbitrary shell commands and check their exit
             code which is used as a test result. The ``script`` field
             is provided to cover simple test use cases only and must
-            not be combined with the :ref:`/spec/plans/discover` step
+            not be combined with the :tmt:story:`/spec/plans/discover` step
             which is more suitable for more complex test scenarios.
 
             Default shell options are applied to the script, see
-            :ref:`/spec/tests/test` for more details. The default
-            :ref:`/spec/tests/duration` for tests defined directly
+            :tmt:story:`/spec/tests/test` for more details. The default
+            :tmt:story:`/spec/tests/duration` for tests defined directly
             under the execute step is ``1h``. Use the ``duration``
             attribute to modify the default limit.
             """,
@@ -229,8 +218,8 @@ class ExecuteInternal(tmt.steps.execute.ExecutePlugin[ExecuteInternalData]):
     Use the internal tmt executor to execute tests.
 
     The internal tmt executor runs tests on the guest one by one directly
-    from the tmt code which shows testing :ref:`/stories/cli/steps/execute/progress`
-    and supports :ref:`/stories/cli/steps/execute/interactive` debugging as well.
+    from the tmt code which shows testing :tmt:story:`/stories/cli/steps/execute/progress`
+    and supports :tmt:story:`/stories/cli/steps/execute/interactive` debugging as well.
     This is the default execute step implementation. Test result is based on the
     script exit code (for shell tests) or the results file (for beakerlib tests).
 
@@ -238,7 +227,7 @@ class ExecuteInternal(tmt.steps.execute.ExecutePlugin[ExecuteInternalData]):
     for certain operations.
 
     ``tmt-file-submit`` - archive the given file in the tmt test data directory.
-    See the :ref:`/stories/features/report-log` section for more details.
+    See the :tmt:story:`/stories/features/report-log` section for more details.
 
     ``tmt-reboot`` - soft reboot the machine from inside the test. After reboot
     the execution starts from the test which rebooted the machine.
@@ -247,19 +236,19 @@ class ExecuteInternal(tmt.steps.execute.ExecutePlugin[ExecuteInternalData]):
     An environment variable ``TMT_REBOOT_COUNT`` is provided which
     the test can use to handle the reboot. The variable holds the
     number of reboots performed by the test. For more information
-    see the :ref:`/stories/features/reboot` feature documentation.
+    see the :tmt:story:`/stories/features/reboot` feature documentation.
 
     ``tmt-report-result`` - generate a result report file from inside the test.
     Can be called multiple times by the test. The generated report
     file will be overwritten if a higher hierarchical result is
     reported by the test. The hierarchy is as follows:
     SKIP, PASS, WARN, FAIL. For more information see the
-    :ref:`/stories/features/report-result` feature documentation.
+    :tmt:story:`/stories/features/report-result` feature documentation.
 
     ``tmt-abort`` - generate an abort file from inside the test. This will
     set the current test result to failed and terminate
     the execution of subsequent tests. For more information see the
-    :ref:`/stories/features/abort` feature documentation.
+    :tmt:story:`/stories/features/abort` feature documentation.
 
     The scripts are hosted by default in the ``/usr/local/bin`` directory, except
     for guests using ``rpm-ostree``, where ``/var/lib/tmt/scripts`` is used.
@@ -282,53 +271,27 @@ class ExecuteInternal(tmt.steps.execute.ExecutePlugin[ExecuteInternalData]):
         super().__init__(**kwargs)
         self._previous_progress_message = ""
 
-    def _test_environment(
+    @property
+    def tasks(
         self,
-        *,
-        invocation: TestInvocation,
-        extra_environment: Optional[Environment] = None,
-        logger: tmt.log.Logger,
-    ) -> Environment:
-        """
-        Return test environment
-        """
+    ) -> Iterator[tuple[Optional[str], list['Guest']]]:
+        # A single execute plugin is expected to process (potentially)
+        # multiple discover phases. There must be a way to tell the execute
+        # plugin which discover phase to focus on. Unfortunately, the
+        # current way is the execute plugin checking its `discover`
+        # attribute.
+        for discover in self.step.plan.discover.phases(classes=(DiscoverPlugin,)):
+            if not discover.enabled_by_when:
+                continue
 
-        extra_environment = extra_environment or Environment()
-
-        environment = extra_environment.copy()
-        environment.update(
-            invocation.guest.environment,
-            invocation.test.environment,
-        )
-
-        assert self.parent is not None
-        assert isinstance(self.parent, tmt.steps.execute.Execute)
-        assert self.parent.plan.my_run is not None
-
-        environment["TMT_TEST_NAME"] = EnvVarValue(invocation.test.name)
-        environment["TMT_TEST_INVOCATION_PATH"] = EnvVarValue(invocation.path)
-        environment["TMT_TEST_DATA"] = EnvVarValue(invocation.test_data_path)
-        environment["TMT_TEST_SUBMITTED_FILES"] = EnvVarValue(invocation.submission_log_path)
-        environment['TMT_TEST_SERIAL_NUMBER'] = EnvVarValue(str(invocation.test.serial_number))
-        environment['TMT_TEST_ITERATION_ID'] = EnvVarValue(
-            f"{self.parent.plan.my_run.unique_id}-{invocation.test.serial_number}"
-        )
-        environment["TMT_TEST_METADATA"] = EnvVarValue(
-            invocation.path / tmt.steps.execute.TEST_METADATA_FILENAME
-        )
-
-        environment.update(
-            # Add variables from invocation contexts
-            invocation.abort,
-            invocation.reboot,
-            invocation.restart,
-            invocation.pidfile,
-            invocation.restraint,
-            # Add variables the framework wants to expose
-            invocation.test.test_framework.get_environment_variables(invocation, logger),
-        )
-
-        return environment
+            yield (
+                discover.name,
+                [
+                    guest
+                    for guest in self.step.plan.provision.ready_guests
+                    if discover.enabled_on_guest(guest)
+                ],
+            )
 
     def _test_output_logger(
         self,
@@ -349,7 +312,6 @@ class ExecuteInternal(tmt.steps.execute.ExecutePlugin[ExecuteInternalData]):
         self,
         *,
         invocation: TestInvocation,
-        extra_environment: Optional[Environment] = None,
         logger: tmt.log.Logger,
     ) -> list[Result]:
         """
@@ -380,10 +342,6 @@ class ExecuteInternal(tmt.steps.execute.ExecutePlugin[ExecuteInternalData]):
         logger.debug(f"Use workdir '{workdir}'.", level=3)
 
         # Create data directory, prepare test environment
-        environment = self._test_environment(
-            invocation=invocation, extra_environment=extra_environment, logger=logger
-        )
-
         _, test_outer_wrapper_filepath = invocation.pidfile.create_wrappers(
             workdir,
             TEST_INNER_WRAPPER_FILENAME_TEMPLATE,
@@ -400,7 +358,9 @@ class ExecuteInternal(tmt.steps.execute.ExecutePlugin[ExecuteInternalData]):
         topology = tmt.steps.Topology(self.step.plan.provision.ready_guests)
         topology.guest = tmt.steps.GuestTopology(guest)
 
-        environment.update(topology.push(dirpath=invocation.path, guest=guest, logger=logger))
+        invocation.environment.update(
+            topology.push(dirpath=invocation.path, guest=guest, logger=logger)
+        )
 
         # Prepare the actual remote command
         remote_command: ShellScript
@@ -416,53 +376,58 @@ class ExecuteInternal(tmt.steps.execute.ExecutePlugin[ExecuteInternalData]):
             shift: int = 2,
             level: int = 3,
             topic: Optional[tmt.log.Topic] = None,
+            stacklevel: int = 1,
         ) -> None:
             logger.verbose(
-                key=key, value=value, color=color, shift=shift, level=level, topic=topic
+                key=key,
+                value=value,
+                color=color,
+                shift=shift,
+                level=level,
+                topic=topic,
+                stacklevel=stacklevel + 1,
             )
 
         # TODO: do we want timestamps? Yes, we do, leaving that for refactoring later,
         # to use some reusable decorator.
-        invocation.check_results = self.run_checks_before_test(
-            invocation=invocation, environment=environment, logger=logger
-        )
+        invocation.check_results = invocation.invoke_checks_before_test()
 
         # Pick the proper timeout for the test
-        timeout: Optional[int]
+        deadline: Optional[tmt.utils.wait.Deadline]
 
         if self.data.interactive:
-            if test.duration:
-                logger.warning('Ignoring requested duration, not supported in interactive mode.')
+            logger.warning('Test duration is not effective due to interactive mode.')
+            logger.info('duration deadline', 'none')
 
-            timeout = None
+            deadline = None
 
         elif self.data.ignore_duration:
             logger.debug("Test duration is not effective due to ignore-duration option.")
-            timeout = None
+            logger.info('duration deadline', 'none')
+
+            deadline = None
 
         else:
-            timeout = tmt.utils.duration_to_seconds(
-                test.duration, tmt.base.DEFAULT_TEST_DURATION_L1
-            )
+            deadline = invocation.deadline
 
-        if logger.verbosity_level >= 1:
-            shift = 1 if self.verbosity_level < 2 else 2
-            logger.verbose(
-                'duration limit',
-                f"{timeout}{' seconds' if timeout is not None else ''}",
-                color="yellow",
-                shift=shift,
-                level=1,
-            )
+            if logger.verbosity_level >= 1:
+                with deadline:
+                    logger.verbose(
+                        'duration deadline',
+                        f'{deadline.time_left.total_seconds():.0f} seconds,'
+                        f' at {deadline.due_at.strftime("%H:%M:%S %Y-%m-%d %Z")}',
+                        color="yellow",
+                        shift=1 if self.verbosity_level < 2 else 2,
+                        level=1,
+                    )
 
         # And invoke the test process.
         output = invocation.invoke_test(
             remote_command,
             cwd=workdir,
-            env=environment,
             interactive=self.data.interactive,
             log=_test_output_logger,
-            timeout=timeout,
+            deadline=deadline,
         )
 
         # Save the captured output. Do not let the follow-up pulls
@@ -493,9 +458,7 @@ class ExecuteInternal(tmt.steps.execute.ExecutePlugin[ExecuteInternalData]):
         )
 
         # Run after-test checks before extracting results
-        invocation.check_results += self.run_checks_after_test(
-            invocation=invocation, environment=environment, logger=logger
-        )
+        invocation.check_results += invocation.invoke_checks_after_test()
 
         # Extract test results and store them in the invocation. Note
         # that these results will be overwritten with a fresh set of
@@ -558,6 +521,10 @@ class ExecuteInternal(tmt.steps.execute.ExecutePlugin[ExecuteInternalData]):
         # Prepare tests, check options
         test_invocations = self.prepare_tests(guest, logger)
 
+        if extra_environment:
+            for invocation in test_invocations:
+                invocation.environment.update(extra_environment)
+
         # Push workdir to guest and execute tests
         guest.push()
         # We cannot use enumerate here due to continue in the code
@@ -581,9 +548,7 @@ class ExecuteInternal(tmt.steps.execute.ExecutePlugin[ExecuteInternalData]):
                 progress_bar.update(progress, test.name)
                 logger.verbose('test', test.summary or test.name, color='cyan', shift=1, level=2)
 
-                self.execute(
-                    invocation=invocation, extra_environment=extra_environment, logger=logger
-                )
+                self.execute(invocation=invocation, logger=logger)
 
                 assert invocation.real_duration is not None  # narrow type
                 duration = style(invocation.real_duration, fg='cyan')
@@ -642,13 +607,7 @@ class ExecuteInternal(tmt.steps.execute.ExecutePlugin[ExecuteInternalData]):
                     invocation.exceptions.append(interrupt_exception)
 
                 # Execute internal checks
-                invocation.check_results += self.run_internal_checks(
-                    invocation=invocation,
-                    environment=self._test_environment(
-                        invocation=invocation, extra_environment=extra_environment, logger=logger
-                    ),
-                    logger=logger,
-                )
+                invocation.check_results += invocation.invoke_internal_checks()
 
                 self._results.extend(invocation.results)
                 self.step.plan.execute.update_results(self.results())
@@ -678,13 +637,7 @@ class ExecuteInternal(tmt.steps.execute.ExecutePlugin[ExecuteInternalData]):
                     else:
                         cwd = self.discover.workdir / test.path.unrooted()
                     self._login_after_test.after_test(
-                        invocation.results,
-                        cwd=cwd,
-                        env=self._test_environment(
-                            invocation=invocation,
-                            extra_environment=extra_environment,
-                            logger=logger,
-                        ),
+                        invocation.results, cwd=cwd, env=invocation.environment
                     )
 
         # Pull artifacts created in the plan data directory
@@ -704,7 +657,7 @@ class ExecuteInternal(tmt.steps.execute.ExecutePlugin[ExecuteInternalData]):
 
         return self._results
 
-    def essential_requires(self) -> list[tmt.base.Dependency]:
+    def essential_requires(self) -> list[tmt.base.core.Dependency]:
         """
         Collect all essential requirements of the plugin.
 
@@ -715,5 +668,5 @@ class ExecuteInternal(tmt.steps.execute.ExecutePlugin[ExecuteInternalData]):
         """
 
         return [
-            tmt.base.DependencySimple('/usr/bin/flock'),
+            tmt.base.core.DependencySimple('/usr/bin/flock'),
         ]

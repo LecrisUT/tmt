@@ -72,19 +72,18 @@ from tmt._compat import importlib
 from tmt._compat.annotationlib import Format, get_annotations
 from tmt._compat.importlib.readers import MultiplexedPath
 from tmt._compat.pathlib import Path
-from tmt._compat.typing import ParamSpec
+from tmt._compat.typing import ParamSpec, Self
 from tmt.container import container
 from tmt.log import LoggableValue
 from tmt.utils.themes import style
 
 if TYPE_CHECKING:
-    import tmt.base
+    import tmt.base.core
     import tmt.cli
-    import tmt.steps
     import tmt.utils.themes
     from tmt._compat.typing import ParamSpec, Self, TypeAlias
+    from tmt.guest import GuestLog
     from tmt.hardware import Size
-    from tmt.steps.provision import GuestLog
 
 
 def sanitize_string(text: str) -> str:
@@ -136,6 +135,26 @@ def configure_constant(default: int, envvar: str) -> int:
     except ValueError as exc:
         raise tmt.utils.GeneralError(
             f"Could not parse '{envvar}={os.environ[envvar]}' as integer."
+        ) from exc
+
+
+def configure_float_constant(default: float, envvar: str) -> float:
+    """
+    Deduce the float value of global constant.
+
+    :param default: the default value of the constant.
+    :param envvar: name of the optional environment variable which would
+        override the default value.
+    :returns: value extracted from the environment variable, or the
+        given default value if the variable did not exist.
+    """
+
+    try:
+        return float(os.environ.get(envvar, default))
+
+    except ValueError as exc:
+        raise tmt.utils.GeneralError(
+            f"Could not parse '{envvar}={os.environ[envvar]}' as float."
         ) from exc
 
 
@@ -246,13 +265,20 @@ DEFAULT_SHELL = "/bin/bash"
 SHELL_OPTIONS = 'set -eo pipefail'
 
 # Defaults for HTTP/HTTPS retries and timeouts (see `retry_session()`).
-DEFAULT_RETRY_SESSION_RETRIES: int = 3
-DEFAULT_RETRY_SESSION_BACKOFF_FACTOR: float = 0.1
+DEFAULT_RETRY_SESSION_RETRIES: int = 8
+RETRY_SESSION_RETRIES: int = configure_constant(
+    DEFAULT_RETRY_SESSION_RETRIES, 'TMT_RETRY_SESSION_RETRIES'
+)
 
-# Defaults for HTTP/HTTPS retries for getting environment file
-# Retry with exponential backoff, maximum duration ~511 seconds
-ENVFILE_RETRY_SESSION_RETRIES: int = 10
-ENVFILE_RETRY_SESSION_BACKOFF_FACTOR: float = 1
+DEFAULT_RETRY_SESSION_BACKOFF_FACTOR: float = 2
+RETRY_SESSION_BACKOFF_FACTOR: float = configure_float_constant(
+    DEFAULT_RETRY_SESSION_BACKOFF_FACTOR, 'TMT_RETRY_SESSION_BACKOFF_FACTOR'
+)
+
+DEFAULT_RETRY_SESSION_BACKOFF_MAX: float = 120
+RETRY_SESSION_BACKOFF_MAX: float = configure_float_constant(
+    DEFAULT_RETRY_SESSION_BACKOFF_MAX, 'TMT_RETRY_SESSION_BACKOFF_MAX'
+)
 
 # Defaults for HTTP/HTTPS codes that are considered retriable
 DEFAULT_RETRIABLE_HTTP_CODES: tuple[int, ...] = (
@@ -278,6 +304,7 @@ GIT_CLONE_INTERVAL: int = configure_constant(DEFAULT_GIT_CLONE_INTERVAL, 'TMT_GI
 
 # Stand-in variables for generic use.
 T = TypeVar('T')
+S = TypeVar('S')
 P = ParamSpec('P')
 
 
@@ -389,6 +416,14 @@ class FmfContext(dict[str, list[str]]):
 
         return dict(self)
 
+    @classmethod
+    def from_serialized(cls, serialized: dict[str, list[str]]) -> 'FmfContext':
+        """
+        Convert from a serialized form.
+        """
+
+        return FmfContext(serialized)
+
 
 #: A type of environment variable name.
 EnvVarName: 'TypeAlias' = str
@@ -403,7 +438,7 @@ class EnvVarValue(str):
     A type of environment variable value
     """
 
-    def __new__(cls, raw_value: Any) -> 'EnvVarValue':
+    def __new__(cls, raw_value: Any) -> Self:
         if isinstance(raw_value, str):
             return str.__new__(cls, raw_value)
 
@@ -623,8 +658,6 @@ class Environment(dict[str, EnvVarValue]):
         if filename.startswith("http"):
             # Create retry session for longer retries, see #1229
             session = retry_session.create(
-                retries=ENVFILE_RETRY_SESSION_RETRIES,
-                backoff_factor=ENVFILE_RETRY_SESSION_BACKOFF_FACTOR,
                 allowed_methods=('GET',),
                 logger=logger,
             )
@@ -1175,6 +1208,12 @@ class Command:
 
         return Command(*self._command, *other)
 
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Command):
+            return False
+
+        return self._command == other._command
+
     def to_element(self) -> _CommandElement:
         """
         Convert a command to a shell command line element.
@@ -1263,7 +1302,7 @@ class Command:
 
         # First, if we were given a message, emit it.
         if message:
-            logger.verbose(message, level=2)
+            logger.verbose(message, level=2, stacklevel=2)
 
         # For debugging, we want to save somewhere the actual command rather
         # than the provided "friendly". Emit the actual command to the debug
@@ -1273,7 +1312,7 @@ class Command:
         # The friendly command version would be emitted only when we were not
         # asked to be quiet.
         if not silent and friendly_command:
-            (log or logger.verbose)("cmd", friendly_command, color="yellow", level=2)
+            (log or logger.verbose)("cmd", friendly_command, color="yellow", level=2, stacklevel=2)
 
         # Nothing more to do in dry mode
         if dry:
@@ -1351,7 +1390,7 @@ class Command:
         if not interactive:
             # Create and start stream loggers
             stdout_logger = StreamLogger(
-                'out',
+                'stdout',
                 stream=process.stdout,
                 logger=output_logger,
                 click_context=click.get_current_context(silent=True),
@@ -1359,11 +1398,11 @@ class Command:
             )
 
             if join:
-                stderr_logger: StreamLogger = UnusedStreamLogger('err')
+                stderr_logger: StreamLogger = UnusedStreamLogger('stderr')
 
             else:
                 stderr_logger = StreamLogger(
-                    'err',
+                    'stderr',
                     stream=process.stderr,
                     logger=output_logger,
                     click_context=click.get_current_context(silent=True),
@@ -1449,11 +1488,11 @@ class Command:
             if not stream_output:
                 if stdout is not None:
                     for line in stdout.splitlines():
-                        output_logger('out', value=line, color='yellow', level=3)
+                        output_logger('stdout', value=line, color='yellow', level=3)
 
                 if stderr is not None:
                     for line in stderr.splitlines():
-                        output_logger('err', value=line, color='yellow', level=3)
+                        output_logger('stderr', value=line, color='yellow', level=3)
 
             raise RunError(
                 f"Command '{friendly_command or str(self)}' returned {process.returncode}.",
@@ -2149,12 +2188,20 @@ class Common(_CommonBase, metaclass=_CommonMeta):
         color: 'tmt.utils.themes.Style' = None,
         shift: int = 0,
         topic: Optional[tmt.log.Topic] = None,
+        stacklevel: int = 1,
     ) -> None:
         """
         Show a message unless in quiet mode
         """
 
-        self._logger.info(key, value=value, color=color, shift=shift, topic=topic)
+        self._logger.info(
+            key,
+            value=value,
+            color=color,
+            shift=shift,
+            topic=topic,
+            stacklevel=stacklevel + 1,
+        )
 
     def verbose(
         self,
@@ -2164,6 +2211,7 @@ class Common(_CommonBase, metaclass=_CommonMeta):
         shift: int = 0,
         level: int = 1,
         topic: Optional[tmt.log.Topic] = None,
+        stacklevel: int = 1,
     ) -> None:
         """
         Show message if in requested verbose mode level
@@ -2171,7 +2219,15 @@ class Common(_CommonBase, metaclass=_CommonMeta):
         In quiet mode verbose messages are not displayed.
         """
 
-        self._logger.verbose(key, value=value, color=color, shift=shift, level=level, topic=topic)
+        self._logger.verbose(
+            key,
+            value=value,
+            color=color,
+            shift=shift,
+            level=level,
+            topic=topic,
+            stacklevel=stacklevel + 1,
+        )
 
     def debug(
         self,
@@ -2181,6 +2237,7 @@ class Common(_CommonBase, metaclass=_CommonMeta):
         shift: int = 0,
         level: int = 1,
         topic: Optional[tmt.log.Topic] = None,
+        stacklevel: int = 1,
     ) -> None:
         """
         Show message if in requested debug mode level
@@ -2188,21 +2245,29 @@ class Common(_CommonBase, metaclass=_CommonMeta):
         In quiet mode debug messages are not displayed.
         """
 
-        self._logger.debug(key, value=value, color=color, shift=shift, level=level, topic=topic)
+        self._logger.debug(
+            key,
+            value=value,
+            color=color,
+            shift=shift,
+            level=level,
+            topic=topic,
+            stacklevel=stacklevel + 1,
+        )
 
-    def warn(self, message: str, shift: int = 0) -> None:
+    def warn(self, message: str, shift: int = 0, stacklevel: int = 1) -> None:
         """
         Show a yellow warning message on info level, send to stderr
         """
 
-        self._logger.warning(message, shift=shift)
+        self._logger.warning(message, shift=shift, stacklevel=stacklevel + 1)
 
-    def fail(self, message: str, shift: int = 0) -> None:
+    def fail(self, message: str, shift: int = 0, stacklevel: int = 1) -> None:
         """
         Show a red failure message on info level, send to stderr
         """
 
-        self._logger.fail(message, shift=shift)
+        self._logger.fail(message, shift=shift, stacklevel=stacklevel + 1)
 
     def _command_verbose_logger(
         self,
@@ -2212,6 +2277,7 @@ class Common(_CommonBase, metaclass=_CommonMeta):
         shift: int = 1,
         level: int = 3,
         topic: Optional[tmt.log.Topic] = None,
+        stacklevel: int = 1,
     ) -> None:
         """
         Reports the executed command in verbose mode.
@@ -2220,7 +2286,15 @@ class Common(_CommonBase, metaclass=_CommonMeta):
         default parameters are adjusted (to preserve the function type).
         """
 
-        self.verbose(key=key, value=value, color=color, shift=shift, level=level, topic=topic)
+        self.verbose(
+            key=key,
+            value=value,
+            color=color,
+            shift=shift,
+            level=level,
+            topic=topic,
+            stacklevel=stacklevel + 1,
+        )
 
     def run(
         self,
@@ -3358,22 +3432,57 @@ def filter_paths(directory: Path, searching: list[str], files_only: bool = False
     return [Path(path) for path in set(found_paths)]  # return all matching unique paths as Path's
 
 
-def dict_to_yaml(
-    data: Union[dict[str, Any], list[Any], 'tmt.base._RawFmfId'],
+#: Which type of YAML loader/dumper implementation to use when creating
+#: a YAML loader/dumper instance. See :py:class:`!ruamel.yaml.YAML` for
+#: details.
+YamlTypType = Literal['rt', 'safe', 'unsafe', 'base']
+
+
+def _yaml_represent_path(representer: Representer, path: Path) -> Any:
+    return representer.represent_scalar('tag:yaml.org,2002:str', str(path))
+
+
+#: Custom representers for common classes tmt puts into data structures.
+_YAML_REPRESENTERS: dict[Any, Callable[[Representer, Any], Any]] = {
+    # Various path-like classes.
+    pathlib.Path: _yaml_represent_path,  # noqa: TID251
+    pathlib.PosixPath: _yaml_represent_path,  # noqa: TID251
+    Path: _yaml_represent_path,
+    # Environment representation, which is basically nothing but
+    # a key:value mapping.
+    Environment: lambda representer, environment: representer.represent_mapping(
+        'tag:yaml.org,2002:map', environment.to_fmf_spec()
+    ),
+}
+
+
+def _yaml(
+    *,
+    yaml_type: Optional[YamlTypType] = None,
     width: Optional[int] = None,
-    sort: bool = False,
     start: bool = False,
-) -> str:
+) -> YAML:
     """
-    Convert dictionary into yaml
+    Create a YAML loader/dumper instance.
+
+    A wrapper over :py:class:`YAML` enforcing our formatting and custom
+    representation of various types.
+
+    :param yaml_type: which implementation of the loader/dumper to use.
+        See :py:class:`YAML` for details.
+    :param width: if set, enforce this as the maximal length of lines.
+    :param start: if set, a document start marker, ``---``, would be
+        emitted before each dumped object.
+    :returns: a loader/dumper instance.
     """
 
-    output = io.StringIO()
-    yaml = YAML()
+    yaml = YAML(typ=yaml_type)
+
     yaml.indent(mapping=4, sequence=4, offset=2)
     yaml.default_flow_style = False
     yaml.allow_unicode = True
     yaml.encoding = 'utf-8'
+
     # ignore[assignment]: ruamel bug workaround, see stackoverflow.com/questions/58083562,
     # sourceforge.net/p/ruamel-yaml/tickets/322/
     #
@@ -3386,117 +3495,177 @@ def dict_to_yaml(
     yaml.explicit_start = cast(None, start)  # # type: ignore[assignment]
 
     # For simpler dumping of well-known classes
-    def _represent_path(representer: Representer, data: Path) -> Any:
-        return representer.represent_scalar('tag:yaml.org,2002:str', str(data))
+    for klass, representer in _YAML_REPRESENTERS.items():
+        yaml.representer.add_representer(klass, representer)
 
-    yaml.representer.add_representer(pathlib.Path, _represent_path)  # noqa: TID251
-    yaml.representer.add_representer(pathlib.PosixPath, _represent_path)  # noqa: TID251
-    yaml.representer.add_representer(Path, _represent_path)
+    return yaml
 
-    def _represent_environment(representer: Representer, data: Environment) -> Any:
-        return representer.represent_mapping('tag:yaml.org,2002:map', data.to_fmf_spec())
 
-    yaml.representer.add_representer(Environment, _represent_environment)
+def _sanitize_yaml_string(s: str) -> str:
+    """
+    Convert multiline strings, sanitize invalid characters.
 
-    # Convert multiline strings, sanitize invalid characters. Based on
-    # `scalarstring.walk_tree()` which does not support any other test
-    # than "is this character in that string?"
-    # Prevents saving non-printable characters a YAML parser might later
-    # reject - see https://github.com/teemtee/tmt/issues/3805
-    def _sanitize_yaml_string(s: str) -> str:
-        pattern = ruamel.yaml.reader.Reader.NON_PRINTABLE
+    Prevents saving non-printable characters a YAML parser might later
+    reject - see https://github.com/teemtee/tmt/issues/3805.
 
-        if '\n' in s:
-            s = ruamel.yaml.scalarstring.preserve_literal(s)
+    Based on :py:meth:`!ruamel.yaml.scalarstring.walk_tree` which does
+    not support any other test than "is this character in that string?".
+    """
 
-        return ''.join(rf'#{{{ord(c):x}}}' if pattern.match(c) else c for c in s)
+    pattern = ruamel.yaml.reader.Reader.NON_PRINTABLE
 
-    def walk_tree(value: Any) -> Any:
-        from collections.abc import MutableMapping, MutableSequence
+    if '\n' in s:
+        s = ruamel.yaml.scalarstring.preserve_literal(s)
 
-        if isinstance(value, MutableMapping):
-            for k, v in value.items():
-                if isinstance(v, str):
-                    value[k] = _sanitize_yaml_string(v)
+    return ''.join(rf'#{{{ord(c):x}}}' if pattern.match(c) else c for c in s)
 
-                else:
-                    value[k] = walk_tree(v)
 
-            return value
+def _sanitize_yaml_tree(value: Any, sort_keys: bool) -> Any:
+    """
+    Convert multiline strings, sanitize invalid characters.
 
-        if isinstance(value, MutableSequence):
-            for k, v in enumerate(value):
-                if isinstance(v, str):
-                    value[k] = _sanitize_yaml_string(v)
+    Prevents saving non-printable characters a YAML parser might later
+    reject - see https://github.com/teemtee/tmt/issues/3805.
 
-                else:
-                    value[k] = walk_tree(v)
+    Based on :py:meth:`!ruamel.yaml.scalarstring.walk_tree` which does
+    not support any other test than "is this character in that string?".
 
-            return value
+    :param sort_keys: if set, sort mapping keys.
+    """
 
-        if isinstance(value, str):
-            return _sanitize_yaml_string(value)
+    from collections.abc import MutableMapping, MutableSequence
+
+    if isinstance(value, MutableMapping):
+        if sort_keys:
+            # Sort the data https://stackoverflow.com/a/40227545
+            sorted_value = CommentedMap()
+
+            for key in sorted(value):
+                sorted_value[key] = value[key]
+
+            value = sorted_value
+
+        for k, v in value.items():
+            if isinstance(v, str):
+                value[k] = _sanitize_yaml_string(v)
+
+            else:
+                value[k] = _sanitize_yaml_tree(v, sort_keys)
 
         return value
 
-    data = walk_tree(data)
+    if isinstance(value, MutableSequence):
+        for k, v in enumerate(value):
+            if isinstance(v, str):
+                value[k] = _sanitize_yaml_string(v)
 
-    if sort:
-        # Sort the data https://stackoverflow.com/a/40227545
-        sorted_data = CommentedMap()
-        for key in sorted(data):
-            # ignore[literal-required]: `data` may be either a generic
-            # dictionary, or _RawFmfId which allows only a limited set
-            # of keys. That spooks mypy, but we do not add any keys,
-            # therefore we will not escape TypedDict constraints.
-            sorted_data[key] = data[key]  # type: ignore[literal-required]
-        data = sorted_data
+            else:
+                value[k] = _sanitize_yaml_tree(v, sort_keys)
+
+        return value
+
+    if isinstance(value, str):
+        return _sanitize_yaml_string(value)
+
+    return value
+
+
+def to_yaml(
+    data: Any,
+    *,
+    yaml_type: Optional[YamlTypType] = None,
+    width: Optional[int] = None,
+    sort: bool = False,
+    start: bool = False,
+) -> str:
+    """
+    Convert a Python data structure into its YAML representation.
+
+    :param data: Python data structure to convert into YAML.
+    :param yaml_type: which implementation of the loader/dumper to use.
+        See :py:class:`YAML` for details.
+    :param width: if set, enforce this as the maximal length of lines.
+    :param sort: if set, and if ``data`` is a dictionary, sort its keys
+        in the YAML output.
+    :param start: if set, a document start marker, ``---``, would be
+        emitted before the dumped object.
+    :returns: a YAML representation of ``data``.
+    """
+
+    yaml = _yaml(yaml_type=yaml_type, width=width, start=start)
+
+    output = io.StringIO()
+
+    data = _sanitize_yaml_tree(data, sort)
+
     yaml.dump(data, output)
+
     return output.getvalue()
 
 
-YamlTypType = Literal['rt', 'safe', 'unsafe', 'base']
-
-
-def yaml_to_python(data: Any, yaml_type: Optional[YamlTypType] = None) -> Any:
+def from_yaml(data: str, *, yaml_type: Optional[YamlTypType] = None) -> Any:
     """
-    Convert YAML into Python data types.
-    """
+    Convert a YAML content into the corresponding Python data structures.
 
-    return YAML(typ=yaml_type).load(data)
-
-
-def yaml_to_dict(data: Any, yaml_type: Optional[YamlTypType] = None) -> dict[Any, Any]:
-    """
-    Convert yaml into dictionary
+    :param data: YAML content to convert into Python data structures.
+    :param yaml_type: which implementation of the loader/dumper to use.
+        See :py:class:`YAML` for details.
+    :returns: Python representation of ``data`` YAML content.
     """
 
-    yaml = YAML(typ=yaml_type)
-    loaded_data = yaml.load(data)
+    try:
+        return _yaml(yaml_type=yaml_type).load(data)
+
+    except ParserError as error:
+        raise GeneralError('Invalid YAML syntax.') from error
+
+
+def yaml_to_dict(data: str, *, yaml_type: Optional[YamlTypType] = None) -> dict[Any, Any]:
+    """
+    Convert a YAML content into a Python dictionary.
+
+    :param data: YAML content to convert into Python dictionary.
+    :param yaml_type: which implementation of the loader/dumper to use.
+        See :py:class:`YAML` for details.
+    :returns: Python representation of ``data`` YAML content. If the YAML
+        contains no data, empty dictionary is returned.
+    :raises GeneralError: when the YAML content does not represent
+        a dictionary.
+    """
+
+    loaded_data = from_yaml(data, yaml_type=yaml_type)
+
     if loaded_data is None:
         return {}
+
     if not isinstance(loaded_data, dict):
         raise GeneralError(
-            f"Expected dictionary in yaml data, got '{type(loaded_data).__name__}'."
+            f"Expected dictionary in YAML data, got '{type(loaded_data).__name__}'."
         )
+
     return loaded_data
 
 
-def yaml_to_list(data: Any, yaml_type: Optional[YamlTypType] = 'safe') -> list[Any]:
+def yaml_to_list(data: str, *, yaml_type: Optional[YamlTypType] = 'safe') -> list[Any]:
     """
-    Convert yaml into list
+    Convert a YAML content into a Python list.
+
+    :param data: YAML content to convert into Python list.
+    :param yaml_type: which implementation of the loader/dumper to use.
+        See :py:class:`YAML` for details.
+    :returns: Python representation of ``data`` YAML content. If the YAML
+        contains no data, empty list is returned.
+    :raises GeneralError: when the YAML content does not represent a list.
     """
 
-    yaml = YAML(typ=yaml_type)
-    try:
-        loaded_data = yaml.load(data)
-    except ParserError as error:
-        raise GeneralError("Invalid yaml syntax.") from error
+    loaded_data = from_yaml(data, yaml_type=yaml_type)
 
     if loaded_data is None:
         return []
+
     if not isinstance(loaded_data, list):
-        raise GeneralError(f"Expected list in yaml data, got '{type(loaded_data).__name__}'.")
+        raise GeneralError(f"Expected list in YAML data, got '{type(loaded_data).__name__}'.")
+
     return loaded_data
 
 
@@ -4343,12 +4512,12 @@ def fmf_id(
     name: str,
     fmf_root: Path,
     logger: tmt.log.Logger,
-) -> 'tmt.base.FmfId':
+) -> 'tmt.base.core.FmfId':
     """
     Return full fmf identifier of the node
     """
 
-    from tmt.base import FmfId
+    from tmt.base.core import FmfId
     from tmt.utils.git import GitInfo
 
     fmf_id = FmfId(fmf_root=fmf_root, name=name)
@@ -4402,18 +4571,30 @@ class TimeoutHTTPAdapter(requests.adapters.HTTPAdapter):
 class RetryStrategy(urllib3.util.retry.Retry):
     logger: tmt.log.Logger
 
+    def _urllib3_2_compatibility(self, kwargs: dict[str, Any]) -> None:
+        """
+        Compatibility layer to support urllib3 < 2.0.0 (epel9, epel10)
+        """
+        # This could be made into a _compat if the logic becomes too complicated
+        if hasattr(self, "BACKOFF_MAX"):
+            # backoff_max kwarg was not recognized until 2.0.0, instead it used `BACKOFF_MAX`
+            backoff_max = kwargs.pop("backoff_max")
+            self.BACKOFF_MAX = backoff_max
+
     # Note: the signature is different than the one of `super().__init__()`.
     # This is on purpose, so we can add mandatory `logger` parameter, without
     # a default value (most likely `None`). But it looks we are fairly safe
     # because `super().__init__()` accepts no positional arguments, for quite
     # some time already, so, effectively, the signatures are equivalent.
     def __init__(self, *, logger: tmt.log.Logger, **kwargs: Any) -> None:
+        self._urllib3_2_compatibility(kwargs)
         super().__init__(**kwargs)
         self.logger = logger
 
     def new(self, **kw: Any) -> 'Self':
         if 'logger' in kw:
             kw.pop('logger')
+        self._urllib3_2_compatibility(kw)
 
         return super().new(logger=self.logger, **kw)
 
@@ -4570,8 +4751,9 @@ class retry_session(contextlib.AbstractContextManager):  # type: ignore[type-arg
     @staticmethod
     def create(
         *,
-        retries: int = DEFAULT_RETRY_SESSION_RETRIES,
-        backoff_factor: float = DEFAULT_RETRY_SESSION_BACKOFF_FACTOR,
+        retries: int = RETRY_SESSION_RETRIES,
+        backoff_factor: float = RETRY_SESSION_BACKOFF_FACTOR,
+        backoff_max: float = RETRY_SESSION_BACKOFF_MAX,
         allowed_methods: Optional[tuple[str, ...]] = None,
         status_forcelist: tuple[int, ...] = DEFAULT_RETRIABLE_HTTP_CODES,
         timeout: Optional[int] = None,
@@ -4588,6 +4770,7 @@ class retry_session(contextlib.AbstractContextManager):  # type: ignore[type-arg
                 status_forcelist=status_forcelist,
                 method_whitelist=allowed_methods,
                 backoff_factor=backoff_factor,
+                backoff_max=backoff_max,
                 logger=logger,
             )
 
@@ -4597,6 +4780,7 @@ class retry_session(contextlib.AbstractContextManager):  # type: ignore[type-arg
                 status_forcelist=status_forcelist,
                 allowed_methods=allowed_methods,
                 backoff_factor=backoff_factor,
+                backoff_max=backoff_max,
                 logger=logger,
             )
 
@@ -4616,8 +4800,9 @@ class retry_session(contextlib.AbstractContextManager):  # type: ignore[type-arg
     def __init__(
         self,
         *,
-        retries: int = DEFAULT_RETRY_SESSION_RETRIES,
-        backoff_factor: float = DEFAULT_RETRY_SESSION_BACKOFF_FACTOR,
+        retries: int = RETRY_SESSION_RETRIES,
+        backoff_factor: float = RETRY_SESSION_BACKOFF_FACTOR,
+        backoff_max: float = RETRY_SESSION_BACKOFF_MAX,
         allowed_methods: Optional[tuple[str, ...]] = None,
         status_forcelist: tuple[int, ...] = DEFAULT_RETRIABLE_HTTP_CODES,
         timeout: Optional[int] = None,
@@ -4625,6 +4810,7 @@ class retry_session(contextlib.AbstractContextManager):  # type: ignore[type-arg
     ) -> None:
         self.retries = retries
         self.backoff_factor = backoff_factor
+        self.backoff_max = backoff_max
         self.allowed_methods = allowed_methods
         self.status_forcelist = status_forcelist
         self.timeout = timeout
@@ -4634,6 +4820,7 @@ class retry_session(contextlib.AbstractContextManager):  # type: ignore[type-arg
         return self.create(
             retries=self.retries,
             backoff_factor=self.backoff_factor,
+            backoff_max=self.backoff_max,
             allowed_methods=self.allowed_methods,
             status_forcelist=self.status_forcelist,
             timeout=self.timeout,
@@ -4700,7 +4887,7 @@ def generate_runs(path: Path, id_: tuple[str, ...], all_: bool = False) -> Itera
         yield abs_child_path
 
 
-def load_run(run: 'tmt.base.Run') -> tuple[bool, Optional[Exception]]:
+def load_run(run: 'tmt.base.core.Run') -> tuple[bool, Optional[Exception]]:
     """
     Load a run and its steps from the workdir
     """
@@ -5605,7 +5792,7 @@ def normalize_shell_script(
 
 def normalize_adjust(
     key_address: str, raw_value: Any, logger: tmt.log.Logger
-) -> Optional[list['tmt.base._RawAdjustRule']]:
+) -> list['tmt.base.core._RawAdjustRule']:
     if raw_value is None:
         return []
     if isinstance(raw_value, list):
@@ -5698,6 +5885,9 @@ class FieldValueSource(enum.Enum):
     """
     Indicates source of metadata field value.
     """
+
+    #: The source is not known.
+    UNKNOWN = 'unknown'
 
     #: The value was provided by fmf node key.
     FMF = 'fmf'
@@ -6081,7 +6271,7 @@ class Stopwatch(contextlib.AbstractContextManager['Stopwatch']):
     def __init__(self) -> None:
         pass
 
-    def __enter__(self) -> 'Stopwatch':
+    def __enter__(self) -> Self:
         self.start_time = datetime.datetime.now(datetime.timezone.utc)
 
         return self
@@ -6100,6 +6290,10 @@ class Stopwatch(contextlib.AbstractContextManager['Stopwatch']):
     @property
     def end_time_formatted(self) -> str:
         return format_timestamp(self.end_time)
+
+    @property
+    def duration_formatted(self) -> str:
+        return format_duration(self.duration)
 
     @classmethod
     def measure(

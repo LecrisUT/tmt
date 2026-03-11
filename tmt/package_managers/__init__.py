@@ -1,9 +1,9 @@
 import abc
+import re
 import shlex
 from collections.abc import Iterator
-from typing import TYPE_CHECKING, Any, Callable, Generic, Optional, TypeVar, Union
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Generic, Optional, TypeVar, Union
 
-import tmt
 import tmt.log
 import tmt.plugins
 import tmt.utils
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     # This class will be added in a future PR.
     # For now, just type it as Any to satisfy pyright.
     Repository: TypeAlias = Any
-    from tmt.steps.provision import Guest
+    from tmt.guest import Guest
 
     #: A type of package manager names.
     GuestPackageManager: TypeAlias = str
@@ -80,7 +80,10 @@ class PackagePath(Path):
 Installable = Union[Package, FileSystemPath, PackagePath, PackageUrl]
 
 
-PackageManagerEngineT = TypeVar('PackageManagerEngineT', bound='PackageManagerEngine')
+# PLC0105: typevar name does not reflect its covariance, but that's fine.
+PackageManagerEngineT = TypeVar(  # noqa: PLC0105
+    'PackageManagerEngineT', bound='PackageManagerEngine', covariant=True
+)
 PackageManagerClass = type['PackageManager[PackageManagerEngineT]']
 
 
@@ -121,7 +124,7 @@ def escape_installables(*installables: Installable) -> Iterator[str]:
 
 
 # TODO: find a better name, "options" is soooo overloaded...
-@container(frozen=True)
+@container
 class Options:
     #: A list of packages to exclude from installation.
     excluded_packages: list[Package] = simple_field(default_factory=list[Package])
@@ -240,6 +243,10 @@ class PackageManager(tmt.utils.Common, Generic[PackageManagerEngineT]):
     _engine_class: type[PackageManagerEngineT]
     engine: PackageManagerEngineT
 
+    #: Patterns for extracting failed package names from error output.
+    #: Subclasses override this with their own specific patterns.
+    _FAILED_PACKAGE_INSTALLATION_PATTERNS: ClassVar[list[re.Pattern[str]]] = []
+
     #: If set, this package manager can be used for building derived
     #: images under the hood of the ``bootc`` package manager.
     bootc_builder: bool = False
@@ -269,6 +276,17 @@ class PackageManager(tmt.utils.Common, Generic[PackageManagerEngineT]):
         """
 
         raise NotImplementedError
+
+    def extract_package_name_from_package_manager_output(self, output: str) -> Iterator[str]:
+        """
+        Extract failed package names from package manager error output.
+
+        :param output: Error output (stdout or stderr) from the package manager.
+        :returns: An iterator of package names that failed to install.
+        """
+        for pattern in self._FAILED_PACKAGE_INSTALLATION_PATTERNS:
+            for match in pattern.finditer(output):
+                yield match.group(1)
 
     def install(
         self,
@@ -325,3 +343,48 @@ class PackageManager(tmt.utils.Common, Generic[PackageManagerEngineT]):
         Wrapper of :py:meth:`PackageManagerEngine.create_repository`.
         """
         return self.guest.execute(self.engine.create_repository(directory))
+
+    def install_from_repository(
+        self,
+        *installables: Installable,
+        options: Optional[Options] = None,
+    ) -> CommandOutput:
+        """
+        Install packages from a repository
+        """
+        return self.install(*installables, options=options)
+
+    def install_local(
+        self,
+        *installables: Installable,
+        options: Optional[Options] = None,
+    ) -> CommandOutput:
+        """
+        Install packages stored in a local directory
+        """
+        return self.install(*installables, options=options)
+
+    def install_from_url(
+        self,
+        *installables: Installable,
+        options: Optional[Options] = None,
+    ) -> CommandOutput:
+        """
+        Install packages stored on a remote URL
+        """
+        return self.install(*installables, options=options)
+
+    def enable_copr(self, *repositories: str) -> None:
+        """
+        Enable requested copr repositories
+        """
+        if repositories:
+            raise PrepareError(
+                f"Package manager '{self.NAME}' does not support enabling COPR repositories."
+            )
+
+    def finalize_installation(self) -> CommandOutput:
+        """
+        Perform any post-installation steps.
+        """
+        return CommandOutput(stdout=None, stderr=None)

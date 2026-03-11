@@ -1,20 +1,18 @@
-import typing
-from typing import Optional
+from typing import ClassVar, Optional
 
-import tmt.base
+import tmt.base.core
 import tmt.steps
 import tmt.utils
 from tmt.container import container, field
+from tmt.guest import Guest
 from tmt.log import Logger
 from tmt.steps import PluginOutcome
 from tmt.steps.prepare import PreparePlugin, PrepareStepData
 from tmt.steps.prepare.artifact.providers import (
     _PROVIDER_REGISTRY,
-    ArtifactInfo,
     ArtifactProvider,
     Repository,
 )
-from tmt.steps.provision import Guest
 from tmt.utils import Environment, Path
 
 
@@ -29,27 +27,19 @@ class PrepareArtifactData(PrepareStepData):
         normalize=tmt.utils.normalize_string_list,
     )
 
-
-@container
-class RpmArtifactInfo(ArtifactInfo):
-    """
-    Represents a single RPM package.
-    """
-
-    _raw_artifact: dict[str, str]
-
-    @property
-    def id(self) -> str:
-        """RPM identifier"""
-        return f"{self._raw_artifact['nvr']}.{self._raw_artifact['arch']}.rpm"
-
-    @property
-    def location(self) -> str:
-        return self._raw_artifact['url']
+    default_repository_priority: int = field(
+        default=50,
+        option='--default-repository-priority',
+        metavar='PRIORITY',
+        help="""
+            Default priority for created artifact repositories. Lower values mean
+            higher priority in package managers.
+            """,
+    )
 
 
-def get_artifact_provider(provider_id: str) -> type[ArtifactProvider[ArtifactInfo]]:
-    provider_type = provider_id.split(':')[0]
+def get_artifact_provider(provider_id: str) -> type[ArtifactProvider]:
+    provider_type = provider_id.split(':', maxsplit=1)[0]
     provider_class = _PROVIDER_REGISTRY.get_plugin(provider_type)
     if not provider_class:
         raise tmt.utils.PrepareError(f"Unknown provider type '{provider_type}'")
@@ -63,14 +53,124 @@ class PrepareArtifact(PreparePlugin[PrepareArtifactData]):
 
     .. note::
 
-       This is a draft plugin to be implemented
+       This is a tech preview feature.
+
+    This plugin makes a given artifact available on the guest.
+    This can consist of downloading the artifacts and creating
+    a preferred repository on the guest.
+
+    The goal is to make sure these exact artifacts are being used
+    when requested in one of the
+    :tmt:story:`test require </spec/tests/require>`,
+    :tmt:story:`test recommend </spec/tests/recommend>`, or
+    :ref:`prepare install </plugins/prepare/install>`. Exact NVR
+    *should not* be used in those requests, instead this plugin
+    will take care of disambiguating the requested package based
+    on the provided artifacts.
+
+    Currently, the following artifact providers are supported:
+
+    **Koji**
+
+    Builds from the `Fedora Koji <https://koji.fedoraproject.org>`__ build system.
+
+    * ``koji.build:<build-id>`` - Koji build by build ID
+    * ``koji.task:<task-id>`` - Koji task (including scratch builds)
+    * ``koji.nvr:<nvr>`` - Koji build by NVR (name-version-release)
+
+    Example usage:
+
+    .. code-block:: yaml
+
+        prepare:
+            how: artifact
+            provide:
+              - koji.build:123456
+              - koji.task:654321
+              - koji.nvr:openssl-3.2.6-2.fc42
+
+    **Brew** (Red Hat internal)
+
+    Builds from the Red Hat Brew build system.
+
+    * ``brew.build:<build-id>`` - Brew build by build ID
+    * ``brew.task:<task-id>`` - Brew task (including scratch builds)
+    * ``brew.nvr:<nvr>`` - Brew build by NVR
+
+    Example usage:
+
+    .. code-block:: yaml
+
+        prepare:
+            how: artifact
+            provide:
+              - brew.build:123456
+              - brew.task:654321
+              - brew.nvr:openssl-3.2.6-2.el10
+
+    **Copr**
+
+    Builds from the `Fedora Copr <https://copr.fedorainfracloud.org>`__
+    build system.
+
+    * ``copr.build:<build-id>:<chroot>`` - Copr build by ID and chroot
+
+    Example usage:
+
+    .. code-block:: yaml
+
+        prepare:
+            how: artifact
+            provide:
+              - copr.build:1784470:fedora-43-x86_64
+
+    **File**
+
+    RPMs from local files or remote URLs.
+
+    * ``file:<path>`` - Local RPM file(s) specified via path or a glob pattern
+    * ``file:<directory>`` - All RPMs from a local directory
+    * ``file:<url>`` - Remote RPM file URL (http/https)
+
+    Example usage:
+
+    .. code-block:: yaml
+
+        prepare:
+            how: artifact
+            provide:
+              - file:/tmp/my-package.rpm
+              - file:/tmp/rpms/*.rpm
+              - file:/tmp/rpms
+              - file:https://example.com/my-package.rpm
+
+    **Repository**
+
+    Remote dnf repositories.
+
+    * ``repository-file:<url>`` - URL to a ``.repo`` file
+
+    .. note::
+
+        The ``repository-file`` provider only adds the dnf repository to the
+        guest system, and does not download the RPMs from the repository.
+
+    Example usage:
+
+    .. code-block:: yaml
+
+        prepare:
+            how: artifact
+            provide:
+              - repository-file:https://example.com/my-repo.repo
     """
 
     _data_class = PrepareArtifactData
 
     # Shared repository configuration
-    SHARED_REPO_DIR_NAME: typing.ClassVar[str] = 'artifact-shared-repo'
-    SHARED_REPO_NAME: typing.ClassVar[str] = 'tmt-artifact-shared'
+    SHARED_REPO_DIR_NAME: ClassVar[str] = 'artifact-shared-repo'
+    SHARED_REPO_NAME: ClassVar[str] = 'tmt-artifact-shared'
+    ARTIFACTS_METADATA_FILENAME: ClassVar[str] = 'artifacts.yaml'
 
     def go(
         self,
@@ -92,22 +192,42 @@ class PrepareArtifact(PreparePlugin[PrepareArtifactData]):
             guest=guest,
             logger=logger,
             repo_name=self.SHARED_REPO_NAME,
+            priority=self.data.default_repository_priority,
         )
 
         # Initialize all providers and have them contribute to the shared repo
-        providers: list[ArtifactProvider[ArtifactInfo]] = []
-        for raw_provider_id in self.data.provide:
-            try:
-                provider_class = get_artifact_provider(raw_provider_id)
+        providers: list[ArtifactProvider] = []
+        seen_nvras: dict[str, str] = {}
 
-                # Sanitize the provider ID to use as a directory name
-                provider_id_sanitized = tmt.utils.sanitize_name(raw_provider_id, allow_slash=False)
-                provider_logger = self._logger.descend(raw_provider_id)
-                provider = provider_class(raw_provider_id, logger=provider_logger)
+        # --- Pass 1: Initialize all providers and validate for duplicate NVRAs ---
+        for raw_id in self.data.provide:
+            try:
+                provider_class = get_artifact_provider(raw_id)
+
+                provider_logger = self._logger.descend(raw_id)
+                provider = provider_class(
+                    raw_id,
+                    repository_priority=self.data.default_repository_priority,
+                    logger=provider_logger,
+                )
+
+                self._detect_duplicate_nvras(provider, seen_nvras)
+
                 providers.append(provider)
 
+            except tmt.utils.PrepareError:
+                raise
+
+            except Exception as error:
+                raise tmt.utils.PrepareError(
+                    f"Failed to initialize artifact provider '{raw_id}'."
+                ) from error
+
+        # --- Pass 2: Download and contribute (only reached if no duplicates) ---
+        for provider in providers:
+            try:
                 # Define a unique download path for this provider's artifacts
-                download_path = self.plan_workdir / "artifacts" / provider_id_sanitized
+                download_path = self.plan_workdir / "artifacts" / provider.sanitized_id
 
                 # First, fetch the contents (download artifacts)
                 provider.fetch_contents(guest, download_path)
@@ -124,7 +244,7 @@ class PrepareArtifact(PreparePlugin[PrepareArtifactData]):
 
             except Exception as error:
                 raise tmt.utils.PrepareError(
-                    f"Failed to initialize or use artifact provider '{raw_provider_id}'."
+                    f"Failed to use artifact provider '{provider.raw_id}'."
                 ) from error
 
         # Create or update the shared repository.
@@ -145,6 +265,9 @@ class PrepareArtifact(PreparePlugin[PrepareArtifactData]):
             guest.package_manager.install_repository(repo)
             logger.debug(f"Installed repository '{repo.name}'.")
 
+        # Persist artifact metadata to YAML
+        self._save_artifacts_metadata(providers)
+
         # Report configuration summary
         logger.info(
             f"Configured artifact preparation with {len(self.data.provide)} provider(s) "
@@ -153,8 +276,48 @@ class PrepareArtifact(PreparePlugin[PrepareArtifactData]):
 
         return outcome
 
-    def essential_requires(self) -> list[tmt.base.Dependency]:
+    def essential_requires(self) -> list[tmt.base.core.Dependency]:
         # createrepo is needed to create repository metadata from downloaded artifacts
         return [
-            tmt.base.DependencySimple('/usr/bin/createrepo'),
+            tmt.base.core.DependencySimple('/usr/bin/createrepo'),
         ]
+
+    def _detect_duplicate_nvras(
+        self, provider: ArtifactProvider, seen_nvras: dict[str, str]
+    ) -> None:
+        """
+        Check for duplicate NVRAs across providers.
+        """
+        raw_id = provider.raw_id
+
+        for artifact_info in provider.artifact_metadata:
+            if (nvra := artifact_info["nvra"]) in seen_nvras:
+                raise tmt.utils.PrepareError(
+                    f"Artifact '{nvra}' provided by both '{seen_nvras[nvra]}' and '{raw_id}'."
+                )
+
+            seen_nvras[nvra] = raw_id
+
+    def _save_artifacts_metadata(self, providers: list[ArtifactProvider]) -> None:
+        """
+        Persist the metadata of artifacts to a YAML file.
+
+        Groups artifacts by provider.
+        """
+
+        metadata = {
+            'providers': [
+                {
+                    'id': provider.raw_id,
+                    'artifacts': provider.artifact_metadata,
+                }
+                for provider in providers
+            ]
+        }
+
+        metadata_file = self.plan_workdir / self.ARTIFACTS_METADATA_FILENAME
+
+        try:
+            metadata_file.write_text(tmt.utils.to_yaml(metadata, start=True))
+        except OSError as error:
+            raise tmt.utils.FileError(f"Failed to write into '{metadata_file}' file.") from error

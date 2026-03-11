@@ -10,7 +10,7 @@ You can obtain detailed list of available options for each command
 by invoking it with ``--help``. In order to control the verbosity
 of the output use ``--verbose`` and ``--quiet``. To display
 implementation details for debugging use the ``--debug`` option.
-See :ref:`/stories/cli/common` options for details.
+See :tmt:story:`/stories/cli/common` options for details.
 
 Simply run ``tmt`` to get started with exploring your working
 directory:
@@ -388,7 +388,7 @@ Those changes have to be committed and pushed manually.
 
 To include nitrate test case in general plans use ``--general``.
 Set of general plans to which the test case will be linked is
-detected from the :ref:`/spec/tests/component`. Any additional
+detected from the :tmt:story:`/spec/tests/component`. Any additional
 general plan will be removed.
 
 For newly created nitrate test case it can be useful to add it
@@ -397,7 +397,7 @@ done using the ``--link-runs`` option.
 
 Use the ``--bugzilla`` option together with ``--how nitrate`` or
 ``--how polarion`` to link bugs marked as ``verifies``
-in the :ref:`/spec/core/link` attribute with the corresponding
+in the :tmt:story:`/spec/core/link` attribute with the corresponding
 Nitrate/Polarion test case.
 
 Almost all important attributes should be pulled from fmf metadata
@@ -423,8 +423,8 @@ BeakerLib Libraries
 In order to prevent unnecessary test code duplication it makes
 sense to use a test library which implements frequently repeated
 actions. Currently beakerlib libraries are supported. They can be
-defined in the :ref:`/spec/tests/require` attribute and are
-fetched during the :ref:`/spec/plans/discover` step.
+defined in the :tmt:story:`/spec/tests/require` attribute and are
+fetched during the :tmt:story:`/spec/plans/discover` step.
 
 Use the short backward-compatible syntax to fetch libraries from
 the `default repository`__:
@@ -445,7 +445,7 @@ location:
         url: https://github.com/beakerlib/openssl
         name: /certgen
 
-See the :ref:`/spec/tests/require` attribute specification for
+See the :tmt:story:`/spec/tests/require` attribute specification for
 detailed description of the syntax and available keys.
 
 
@@ -511,7 +511,7 @@ Multiple Configs
 
 Step can contain multiple configurations. In this case provide
 each config with a unique name. Applying ansible playbook and
-executing custom script in a single :ref:`/spec/plans/prepare`
+executing custom script in a single :tmt:story:`/spec/plans/prepare`
 step could look like this:
 
 .. code-block:: yaml
@@ -526,7 +526,7 @@ step could look like this:
 
 Another common use case which can be easily covered by multiple
 configs can be fetching tests from multiple repositories during
-the :ref:`/spec/plans/discover` step:
+the :tmt:story:`/spec/plans/discover` step:
 
 .. code-block:: yaml
 
@@ -563,7 +563,7 @@ package then could be done in the following way:
         how: install
         package: python3-pytest
 
-Eventually, use :ref:`/spec/core/adjust` to extend the step
+Eventually, use :tmt:story:`/spec/core/adjust` to extend the step
 conditionally:
 
 .. code-block:: yaml
@@ -576,6 +576,8 @@ conditionally:
             package: python3-pytest
 
 
+.. _parametrize-plans:
+
 Parametrize Plans
 ------------------------------------------------------------------
 
@@ -583,7 +585,7 @@ It is possible to parametrize plans using environment variables and
 context. This may be useful to reduce duplication, for example in
 CI systems.
 
-For :ref:`/spec/plans/environment` variables the syntax is
+For :tmt:story:`/spec/plans/environment` variables the syntax is
 standard, both ``$var`` and ``${var}`` may be used. The values of
 variables are taken from the ``--environment`` command line option
 and the ``environment`` plan attribute. If a variable is defined
@@ -614,7 +616,7 @@ step and would select more tests than required in the case the test names are no
 
     $ tmt run -e PICK_TMT='^/tests/core/ls$' -e PICK_FMF='^/tests/(unit|basic/ls)$'
 
-For :ref:`context</spec/context>` parametrization the syntax is
+For :tmt:story:`context</spec/context>` parametrization the syntax is
 ``$@dimension`` or ``$@{dimension}``. The values are set according
 to the defined context specified using ``--context`` command line
 option and the ``context`` plan attribute:
@@ -638,7 +640,7 @@ Dynamic ``ref`` Evaluation
 
 When using test branching for test maintenance it becomes handy to
 be able to set :ref:`ref</plugins/discover/fmf>` dynamically
-depending on the provided :ref:`/spec/context`. This is possible
+depending on the provided :tmt:story:`/spec/context`. This is possible
 using a special file in tmt format stored in a default branch of a
 tests repository. That special file should contain rules assigning
 attribute ``ref`` in an ``adjust`` block depending on the context.
@@ -784,550 +786,6 @@ checked using the ``tmt story coverage`` command:
     ...
     done todo todo /stories/cli/usability/completion
      39%   9%   9% from 109 stories
-
-
-Run
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The ``tmt run`` command is used to execute tests. By default all
-steps for all discovered test plans are executed:
-
-.. code-block:: shell
-
-    $ tmt run
-    /var/tmp/tmt/run-581
-
-    /plans/basic
-        discover
-            how: fmf
-            directory: /home/psss/git/tmt
-            filter: tier: 0,1,2
-            summary: 15 tests selected
-        provision
-            how: local
-            distro: Fedora release 32 (Thirty Two)
-            summary: 1 guest provisioned
-        prepare
-            how: ansible
-            playbook: ansible/packages.yml
-            how: install
-            summary: Install required packages
-            package: beakerlib
-            summary: 2 preparations applied
-        execute
-            how: tmt
-            summary: 15 tests executed
-        report
-            how: display
-            summary: 15 tests passed
-        finish
-            summary: 0 tasks completed
-
-Even if there are no :ref:`/spec/plans` defined it is still
-possible to execute tests and custom scripts. See the default
-:ref:`/stories/cli/run/default/plan` story for details.
-
-Dry run mode is enabled with the ``--dry`` option:
-
-.. code-block:: shell
-
-    tmt run --dry
-
-Each test run creates a workdir where relevant data such as tests
-code from the discover step or test results from the execute step
-are stored. If you don't need to investigate test logs and other
-artifacts generated by the run you can remove the workdir after
-the execution is finished:
-
-.. code-block:: shell
-
-    tmt run --remove
-    tmt run --rm
-    tmt run -r
-
-
-Select Plans
-------------------------------------------------------------------
-
-Choose which plans should be executed:
-
-.. code-block:: shell
-
-    $ tmt run plan --name basic
-    /var/tmp/tmt/run-083
-
-    /plans/basic
-        discover
-            how: fmf
-            url: https://github.com/teemtee/tmt
-            ref: devel
-            filter: tier: 0,1
-            tests: 2 tests selected
-        provision
-        prepare
-        execute
-            how: tmt
-            result: 2 tests passed, 0 tests failed
-        report
-        finish
-
-
-Select Tests
-------------------------------------------------------------------
-
-Run only a subset of available tests across all plans:
-
-.. code-block:: shell
-
-    $ tmt run test --filter tier:1
-    /plans/basic
-        discover
-            how: fmf
-            url: https://github.com/teemtee/tmt
-            ref: devel
-            filter: tier: 0,1
-            tests: 1 test selected
-        ...
-
-    /plans/helps
-        discover
-            how: shell
-            directory: /home/psss/git/tmt
-            tests: 0 tests selected
-        ...
-
-    /plans/smoke
-        discover
-            how: shell
-            tests: 0 tests selected
-        ...
-
-To run only tests defined in the current working directory:
-
-.. code-block:: shell
-
-    $ tmt run test --name .
-
-Select Steps
-------------------------------------------------------------------
-
-The test execution is divided into the following six steps:
-``discover``, ``provision``, ``prepare``, ``execute``, ``report``
-and ``finish``. See the :ref:`specification` for more details
-about individual steps.
-
-It is possible to execute only selected steps. For example in
-order to see which tests would be executed without actually
-running them choose the ``discover`` step:
-
-.. code-block:: shell
-
-    $ tmt run discover
-    /var/tmp/tmt/run-085
-
-    /plans/basic
-        discover
-            how: fmf
-            url: https://github.com/teemtee/tmt
-            ref: devel
-            filter: tier: 0,1
-            tests: 2 tests selected
-
-    /plans/helps
-        discover
-            how: shell
-            directory: /home/psss/git/tmt
-            tests: 4 tests selected
-
-Use ``--verbose`` and ``--debug`` to enable more detailed output
-such as list of individual tests or showing the progress of the
-test environment provisioning:
-
-.. code-block:: shell
-
-    $ tmt run discover --verbose
-    /var/tmp/tmt/run-767
-
-    /plans/basic
-        discover
-            how: fmf
-            url: https://github.com/teemtee/tmt
-            ref: devel
-            filter: tier: 0,1
-            tests: 2 tests selected
-                /one/tests/docs
-                /one/tests/ls
-
-    /plans/helps
-        discover
-            how: shell
-            directory: /home/psss/git/tmt
-            tests: 4 tests selected
-                /help/main
-                /help/test
-                /help/plan
-                /help/smoke
-
-You can also choose multiple steps to be executed:
-
-.. code-block:: shell
-
-    tmt run discover provision prepare
-
-Arguments for particular step can be specified after the step
-name, options for all steps should go to the ``run`` command:
-
-.. code-block:: shell
-
-    # debug output for provision only
-    tmt run discover provision --debug
-
-    # debug output for all steps
-    tmt run --debug discover provision
-
-In order to execute all test steps while providing arguments to
-some of them it is possible to use the ``--all`` option:
-
-.. code-block:: shell
-
-    tmt run --all provision --how=local
-
-
-Execute Progress
-------------------------------------------------------------------
-
-When run in terminal ``execute`` step prints name of the executed test
-unless ``--debug`` or ``--verbose`` options are used:
-
-.. code-block:: shell
-
-    $ tmt run
-
-        execute
-            how: tmt
-            progress: /tests/core/enabled [5/16]
-
-
-In the verbose mode the duration and result after the test is executed
-are printed:
-
-.. code-block:: shell
-
-    $ tmt run --all execute -v
-
-        execute
-            how: tmt
-                00:00:03 pass /tests/core/adjust [1/16]
-
-More verbose mode prints summary of the test being executed first:
-
-.. code-block:: shell
-
-    $ tmt run --all execute -vv
-
-        execute
-            how: tmt
-            exit-first: False
-                test: Verify test/plan adjustments based on context
-                    00:00:04 pass /tests/core/adjust [1/16]
-
-The most verbose mode prints also the test output:
-
-.. code-block:: shell
-
-    $ tmt run --all execute -vvv
-
-        execute
-            how: tmt
-            order: 50
-            exit-first: False
-                test: Verify test/plan adjustments based on context
-                    out:
-                    out: ::::::::::::::::::::::::::::::::::::::::::::
-                    out: ::   Setup
-                    out: ::::::::::::::::::::::::::::::::::::::::::::
-                    out:
-                    out: :: [ 17:03:06 ] :: [  BEGIN   ] :: Create...
-                        ....
-                    00:00:04 pass /tests/core/adjust [1/16]
-
-
-Check Report
-------------------------------------------------------------------
-
-When a particular step is ``done``, it won't be executed
-repeatedly unless ``--force`` is used:
-
-.. code-block:: shell
-
-    $ tmt run -l report --verbose
-    /plans/features/core
-        report
-            status: done
-            summary: 10 tests passed
-
-If you need additional information about your already ``done``
-run use ``--force`` together with the ``--verbose`` option:
-
-.. code-block:: shell
-
-    $ tmt run -l report -v --force
-    /plans/features/core
-        report
-            how: display
-                pass /tests/core/adjust
-                pass /tests/core/docs
-                pass /tests/core/dry
-                pass /tests/core/env
-                pass /tests/core/error
-                pass /tests/core/force
-                pass /tests/core/ls
-                pass /tests/core/path
-                pass /tests/core/smoke
-                pass /tests/unit
-            summary: 10 tests passed
-
-In order to investigate test logs raise verbosity even more:
-
-.. code-block:: shell
-
-    $ tmt run -l report -vv --force
-    /plans/features/core
-        report
-            how: display
-                pass /tests/core/adjust
-                    output.txt: /var/tmp/tmt/run-759/plans/features/core/execute/data/tests/core/adjust/output.txt
-                    journal.txt: /var/tmp/tmt/run-759/plans/features/core/execute/data/tests/core/adjust/journal.txt
-                pass /tests/core/docs
-                    output.txt: /var/tmp/tmt/run-759/plans/features/core/execute/data/tests/core/docs/output.txt
-                    journal.txt: /var/tmp/tmt/run-759/plans/features/core/execute/data/tests/core/docs/journal.txt
-                pass /tests/core/dry
-                    output.txt: /var/tmp/tmt/run-759/plans/features/core/execute/data/tests/core/dry/output.txt
-                    journal.txt: /var/tmp/tmt/run-759/plans/features/core/execute/data/tests/core/dry/journal.txt
-                ...
-            summary: 10 tests passed
-
-Use level 3 verbosity ``-vvv`` to show the complete test output.
-For more comfortable review, generate an ``html`` report and open
-it in your favorite web browser:
-
-.. code-block:: shell
-
-    $ tmt run --last report --how html --open --force
-    $ tmt run -l report -h html -of
-
-
-Provision Options
-------------------------------------------------------------------
-
-By default, tests are executed under a virtual machine so that
-your laptop is not affected by unexpected changes. The following
-commands are equivalent:
-
-.. code-block:: shell
-
-    tmt run
-    tmt run -a provision -h virtual
-    tmt run --all provision --how=virtual
-
-You can also use an alternative virtual machine implementation
-using the ``testcloud`` provisioner:
-
-.. code-block:: shell
-
-    tmt run --all provision --how=virtual.testcloud
-
-If you already have a box ready for testing with ``ssh`` enabled,
-use the ``connect`` method:
-
-.. code-block:: shell
-
-    tmt run --all provision --how=connect --guest=name-or-ip --user=login --password=secret --become
-    tmt run --all provision --how=connect --guest=name-or-ip --key=private-key-path
-
-The ``container`` method allows to execute tests in a container
-using ``podman``:
-
-.. code-block:: shell
-
-    tmt run --all provision --how=container --image=fedora:latest
-
-If you are confident that tests are safe you can execute them
-directly on your ``local`` host:
-
-.. code-block:: shell
-
-    tmt run --all provision --how=local
-
-In order to reboot a provisioned guest use the ``reboot`` command.
-By default a soft reboot is performed which should prevent data
-loss, use ``--hard`` to force a hard reboot:
-
-.. code-block:: shell
-
-    tmt run --last reboot
-    tmt run --last reboot --hard
-
-
-Debug Tests
-------------------------------------------------------------------
-
-Sometimes the environment preparation can take a long time. Thus,
-especially for debugging tests, it usually makes sense to run the
-``provision`` and ``prepare`` step only once, then ``execute``
-tests as many times as necessary to debug the test code and
-finally clean up when debugging is done:
-
-.. code-block:: shell
-
-    tmt run --id <ID> --until execute    # prepare, run test once
-
-    tmt run -i <ID> execute -f           # run test again
-    tmt run -i <ID> execute -f           # run it again
-    tmt run -i <ID> execute -f           # and again
-
-    tmt run -i <ID> report finish
-
-Instead of always specifying the whole run id you can also use
-``--last`` or ``-l`` as an abbreviation for the last run id:
-
-.. code-block:: shell
-
-    tmt run --last execute --force
-    tmt run -l execute -f
-
-The ``--force`` option instructs ``tmt`` to run given step even if
-it has been already completed before. Use ``discover --force`` to
-synchronize test code changes to the run workdir:
-
-.. code-block:: shell
-
-    tmt run -l discover -f execute -f
-
-In order to interactively debug tests use the ``--interactive``
-option which disables output capturing so that you can see what
-exactly is happening during test execution. This also allows to
-inspect particular place of the code by inserting a ``bash`` in
-the shell code or ``import pdb; pdb.set_trace()`` for python:
-
-.. code-block:: shell
-
-    tmt run --all execute --how tmt --interactive
-
-
-Aliases
-------------------------------------------------------------------
-
-It might be useful to set up a set of shell aliases for the tmt
-command lines which you often use. For a quick reservation of
-a machine or a container for quick experimenting:
-
-.. code-block:: shell
-
-    alias reserve='tmt run login --step execute execute finish provision --how container --image fedora'
-
-Reserving a testing box then can be as short as this:
-
-.. code-block:: shell
-
-    reserve
-    reserve -h virtual
-    reserve -i fedora:32
-    reserve --how virtual
-    reserve --image fedora:32
-
-For interactive debugging of tests the following three aliases can
-come in handy:
-
-.. code-block:: shell
-
-    alias start='tmt run --verbose --until report execute --how tmt --interactive test --name . provision --how virtual --image fedora'
-    alias retest='tmt run --last test --name . discover -f execute -f --how tmt --interactive'
-    alias stop='tmt run --last report --verbose finish'
-
-The test debugging session then can look like this:
-
-.. code-block:: shell
-
-    start
-    retest
-    retest
-    retest login
-    ...
-    stop
-
-First you ``start`` the session in order to provision a testing
-environment, then you ``retest`` your test code changes as many
-times as you need to finalize the test implementation, and finally
-``stop`` is used to clean up the testing environment.
-
-
-Guest Login
-------------------------------------------------------------------
-
-Use the ``login`` command to get an interactive shell on the
-provisined guest. This can be useful for example for additional
-manual preparation of the guest before testing or checking test
-logs to investigate a test failure:
-
-.. code-block:: shell
-
-    tmt run login --step prepare
-    tmt run login --step execute
-
-It's possible to log in at the start or end of a step or select
-the desired step phase using order:
-
-.. code-block:: shell
-
-    tmt run login --step prepare:start
-    tmt run login --step prepare:50
-    tmt run login --step prepare:end
-
-Interactive shell session can be also enabled conditionally when
-specific test result occurs:
-
-.. code-block:: shell
-
-    tmt run login --when fail
-    tmt run login --when fail --when error
-
-You can also enable only the ``provision`` step to easily get a
-clean and safe environment for experimenting. Use the ``finish``
-step to remove provisioned guest:
-
-.. code-block:: shell
-
-    tmt run provision login
-    tmt run --last finish
-
-Clean up the box right after your are done with experimenting by
-combining the above-mentioned commands on a single line:
-
-.. code-block:: shell
-
-    tmt run provision login finish
-
-Login can be used to run an arbitrary script on a provisioned
-guest. This can be handy if you want to run arbitrary scripts between
-steps for example. This is currently used in the Testing Farm's
-`tmt reproducer`__:
-
-.. code-block:: shell
-
-    tmt run --last login < script.sh
-
-__ https://docs.testing-farm.io/Testing%20Farm/0.1/test-results.html#_tmt_reproducer
-
-Have you heard already that using command abbreviation is possible
-as well? It might save you some typing:
-
-.. code-block:: shell
-
-    tmt run pro log fin
-
-See the :ref:`/stories/cli/run/login` user stories for more
-details and examples.
 
 
 

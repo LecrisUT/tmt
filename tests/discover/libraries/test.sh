@@ -21,8 +21,14 @@ rlJournalStart
     rlPhaseEnd
 
     rlPhaseStartTest "Conflict"
-        rlRun -s "$tmt conflict" 2
-        rlAssertGrep 'Library.*conflicts' $rlRun_LOG
+        # TODO: Provide a better test covering the expected expansion defined in tmt.libraries.resolve_dependencies
+        rlRun -s "tmt run -rvvvddd discover plan --name conflict" 0
+        rlAssertGrep "Fetch library 'openssl/certgen'" $rlRun_LOG
+        rlAssertGrep "Detected library '{'url': 'https://github.com/beakerlib/openssl', 'name': '/certgen', 'type': 'library'}'." $rlRun_LOG
+        rlAssertGrep "Fetch library 'certgen/certgen'" $rlRun_LOG
+        rlAssertGrep "Detected library '{'url': 'https://github.com/redhat-qe-security/certgen', 'name': '/certgen', 'type': 'library'}'." $rlRun_LOG
+        rlAssertGrep "Detected library '{'url': 'https://github.com/beakerlib-libraries/certgen/', 'name': '/certgen', 'nick': 'openssl', 'type': 'library'}'." $rlRun_LOG
+        rlAssertGrep "Reusing previously fetched library 'openssl/certgen' from openssl/certgen (https://github.com/beakerlib/openssl#master)" $rlRun_LOG
     rlPhaseEnd
 
     rlPhaseStartTest "Destination"
@@ -37,11 +43,11 @@ rlJournalStart
         rlRun -s "$tmt missing/library" 2
         rlAssertGrep 'dnf.*install.*openssl/wrong' $rlRun_LOG
         rlRun -s "$tmt missing/metadata" 2
-        rlAssertGrep 'Repository .* does not contain fmf metadata.' $rlRun_LOG
+        rlAssertGrep "fail: Failed to process beakerlib libraries (/) for test '/certificate/missing/metadata'" $rlRun_LOG
         rlRun -s "$tmt missing/reference" 2
         rlAssertGrep 'Reference .* not found.' $rlRun_LOG
         rlRun -s "$tmt missing/node-metadata" 2
-        rlAssertGrep 'Library with fmf_id=' $rlRun_LOG
+        rlAssertGrep "fail: Failed to process beakerlib libraries (/dir-without-fmf) for test '/certificate/missing/node-metadata'" $rlRun_LOG
     rlPhaseEnd
 
     rlPhaseStartTest "Deep"

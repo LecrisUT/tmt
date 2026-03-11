@@ -28,7 +28,7 @@ execute test faster in a container. To execute tests directly on
 the test runner use the :ref:`/plugins/provision/local` provision
 plugin. This can be much faster but also dangerous, be sure that
 you trust the project before executing tests on your system. See
-also the :ref:`/stories/features/feeling-safe` section.
+also the :tmt:story:`/stories/features/feeling-safe` section.
 
 
 .. _testing-farm:
@@ -57,7 +57,7 @@ ansible collections`__ are available on the test runner and can be
 used in user playbooks.
 
 __ https://docs.testing-farm.io/
-__ https://api.testing-farm.io/redoc
+__ https://api.testing-farm.io
 __ https://docs.testing-farm.io/Testing%20Farm/0.1/cli.html
 __ https://docs.testing-farm.io/Testing%20Farm/0.1/onboarding.html
 __ https://docs.testing-farm.io/Testing%20Farm/0.1/test-environment.html#_composes

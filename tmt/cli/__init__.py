@@ -9,12 +9,11 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar, cast
 
 import click
-import fmf
 import fmf.utils
 
 import tmt
 import tmt._bootstrap
-import tmt.base
+import tmt.base.core
 import tmt.config
 import tmt.log
 import tmt.plugins
@@ -81,9 +80,9 @@ class ContextObject:
     steps: set[str] = simple_field(default_factory=set[str])
     clean: Optional[tmt.Clean] = None
     clean_logger: Optional[tmt.log.Logger] = None
-    clean_partials: collections.defaultdict[str, list[tmt.base.CleanCallback]] = simple_field(
+    clean_partials: collections.defaultdict[str, list[tmt.base.core.CleanCallback]] = simple_field(
         default_factory=lambda: cast(
-            collections.defaultdict[str, list[tmt.base.CleanCallback]],
+            collections.defaultdict[str, list[tmt.base.core.CleanCallback]],
             collections.defaultdict(list),
         )
     )

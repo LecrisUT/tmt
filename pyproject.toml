@@ -71,6 +71,9 @@ prepare-artifact = [
     ]
 provision-beaker = [
     "mrack>=1.25.0",
+    # Needed because beaker-client uses pkg_resources which are deprecated
+    # https://github.com/beaker-project/beaker/issues/232
+    "setuptools<81",
     ]
 provision-mock = [
     # mockbuild
@@ -229,7 +232,10 @@ show_error_codes = true
 follow_imports = "normal"
 
 python_version = "3.9"
-files = ["tmt/"]
+files = [
+    "tmt/",
+    "tests/core/about/",
+]
 
 [[tool.mypy.overrides]]
 module = [
@@ -250,6 +256,7 @@ ignore_missing_imports = true
 [tool.pyright]
 include = [
     "tmt/**/*.py",
+    "tests/core/about/*.py"
 ]
 ignore = [
     "docs/**",
@@ -271,8 +278,9 @@ ignore = [
     "tmt/steps/report/polarion.py",
     "tmt/steps/report/reportportal.py",
     "tmt/__init__.py",
-    "tmt/base.py",
+    "tmt/base/core.py",
     "tmt/convert.py",
+    "tmt/guest/__init__.py",
     "tmt/lint.py",
     "tmt/queue.py",
     "tmt/utils/__init__.py",
@@ -372,8 +380,6 @@ ignore = [
     "PERF203", # `try`-`except` within a loop incurs performance overhead
     "D200",  # One-line docstring should fit on one line
     "D212",  # Multi-line docstring summary should start at the first line
-    "F401",  # Checks for unused imports
-             # (Started failing but need a manual PR to verify all cases)
 
     # pydocstyle
     # TODO: the permanent list (drop this comment once the temporary list

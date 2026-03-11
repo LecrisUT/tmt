@@ -1,15 +1,20 @@
 import os
 from shlex import quote
-from typing import Any, Optional, Union, cast
+from typing import Any, ClassVar, Optional, Union, cast
 
 import tmt
-import tmt.base
 import tmt.log
 import tmt.steps
 import tmt.steps.provision
 import tmt.utils
 from tmt.container import container, field
-from tmt.steps.provision import DEFAULT_PUSH_OPTIONS, GuestCapability, RebootMode, TransferOptions
+from tmt.guest import (
+    DEFAULT_PUSH_OPTIONS,
+    GuestCapability,
+    RebootMode,
+    TransferOptions,
+)
+from tmt.steps.provision import Provision
 from tmt.utils import (
     Command,
     OnProcessEndCallback,
@@ -34,7 +39,7 @@ DEFAULT_STOP_TIME = 1
 
 
 @container
-class PodmanGuestData(tmt.steps.provision.GuestData):
+class PodmanGuestData(tmt.guest.GuestData):
     image: str = field(
         default=DEFAULT_IMAGE,
         option=('-i', '--image'),
@@ -64,6 +69,16 @@ class PodmanGuestData(tmt.steps.provision.GuestData):
     network: Optional[str] = field(
         default=None,
         internal=True,
+    )
+
+    network_prefix: Optional[str] = field(
+        default=None,
+        option='--network-prefix',
+        metavar='PREFIX',
+        help="""
+             Custom prefix for container network names to avoid collisions
+             between multiple simultaneous tmt invocations.
+             """,
     )
 
     pull_attempts: int = field(
@@ -111,6 +126,7 @@ class GuestContainer(tmt.Guest):
     """
 
     _data_class = PodmanGuestData
+    NETWORK_NAME_FORMAT: ClassVar[str] = "{prefix}tmt-{run_name}-{plan_name}-network"
 
     image: Optional[str]
     container: Optional[str]
@@ -120,6 +136,7 @@ class GuestContainer(tmt.Guest):
     pull_attempts: int
     pull_interval: int
     stop_time: int
+    network_prefix: Optional[str]
     logger: tmt.log.Logger
 
     @property
@@ -158,13 +175,26 @@ class GuestContainer(tmt.Guest):
     def _setup_network(self) -> list[str]:
         """
         Set up the desired network.
-        Will look for existing network using the tmt workdir name,
-        or will create that network if it doesn't exist.
+        Creates a unique network name based on the run ID and plan name,
+        and creates that network if it doesn't exist.
         Returns the network arguments to be used in podman run command.
+
+        All container guests in a single plan will share the same network,
+        to allow communication between them.
         """
 
-        run_id = self._tmt_name().split('-')[1]
-        self.network = f"tmt-{run_id}-network"
+        # Use provision-level network name to allow communication between containers
+        # while avoiding collisions across different test runs
+        assert isinstance(self.parent, Provision)  # narrow type
+
+        # Use run_id and plan's safe name to ensure uniqueness across multiple plans
+        # running simultaneously while maintaining good debugging information
+        # Include custom prefix if provided for additional collision avoidance
+        self.network = self.NETWORK_NAME_FORMAT.format(
+            prefix=self.network_prefix or '',
+            run_name=self.parent.run_workdir.name,
+            plan_name=self.parent.plan.pathless_safe_name,
+        )
 
         try:
             self.podman(
@@ -180,6 +210,56 @@ class GuestContainer(tmt.Guest):
                 raise err
 
         return ['--network', self.network]
+
+    def _setup_environment(self) -> list[str]:
+        """
+        Set up environment variables for the container.
+
+        Writes plan environment variables to a file and returns
+        the arguments to pass them to ``podman run`` via ``--env-file``.
+
+        The file uses a simple ``KEY=VALUE`` format, one variable per line.
+        This is the format expected by podman's ``--env-file`` option.
+
+        .. note::
+
+            This is NOT the standard dotenv format. Podman's env-file parser
+            does not support quoted values or multiline values. Values are
+            taken literally after the first ``=`` character. See
+            https://github.com/containers/podman/blob/main/cmd/podman/parse/net.go
+        """
+
+        assert isinstance(self.parent, Provision)  # narrow type
+
+        environment = self.parent.plan.environment
+
+        if not environment:
+            return []
+
+        # Filter out variables with newlines - podman's env-file format
+        # does not support multiline values (one line = one variable)
+        filtered_env = tmt.utils.Environment()
+        for key, value in environment.items():
+            if '\n' in value:
+                self.warn(
+                    f"Environment variable '{key}' contains a newline character. "
+                    "Podman's env-file format does not support multiline values, "
+                    "skipping this variable."
+                )
+            else:
+                filtered_env[key] = value
+
+        if not filtered_env:
+            return []
+
+        # Write environment to a file in the guest workdir
+        # Format: KEY=VALUE per line, no quoting (podman takes values literally)
+        env_file = self.guest_workdir / 'podman-run-environment'
+        env_file.write_text('\n'.join(f'{k}={v}' for k, v in filtered_env.items()))
+
+        self.debug(f"Podman run environment file written to '{env_file}'.")
+
+        return ['--env-file', str(env_file)]
 
     def start(self) -> None:
         """
@@ -229,6 +309,7 @@ class GuestContainer(tmt.Guest):
         additional_args = []
 
         additional_args.extend(self._setup_network())
+        additional_args.extend(self._setup_environment())
 
         # Run the container
         self.debug(f"Start container '{self.image}'.")
@@ -279,7 +360,7 @@ class GuestContainer(tmt.Guest):
                 raise tmt.utils.ProvisionError("No container initialized.")
 
             if waiting is None:
-                waiting = tmt.steps.provision.default_reconnect_waiting()
+                waiting = tmt.guest.default_reconnect_waiting()
                 waiting.deadline = Deadline.from_seconds(CONNECTION_TIMEOUT)
 
             self.debug("Hard reboot using the reboot command 'container restart'.")
@@ -293,7 +374,7 @@ class GuestContainer(tmt.Guest):
                 "Custom reboot command not supported in podman provision."
             )
 
-        raise tmt.steps.provision.RebootModeNotSupportedError(
+        raise tmt.guest.RebootModeNotSupportedError(
             f"Guest '{self.multihost_name}' does not support {mode.value} reboot."
             " Containers can only be stopped and started again (hard reboot).",
             guest=self,
@@ -302,7 +383,7 @@ class GuestContainer(tmt.Guest):
 
     def _run_ansible(
         self,
-        playbook: tmt.steps.provision.AnsibleApplicable,
+        playbook: tmt.guest.AnsibleApplicable,
         playbook_root: Optional[Path] = None,
         extra_args: Optional[str] = None,
         friendly_command: Optional[str] = None,
@@ -397,6 +478,7 @@ class GuestContainer(tmt.Guest):
         env: Optional[tmt.utils.Environment] = None,
         friendly_command: Optional[str] = None,
         test_session: bool = False,
+        immediately: bool = True,
         tty: bool = False,
         silent: bool = False,
         log: Optional[tmt.log.LoggingFunction] = None,
@@ -434,13 +516,16 @@ class GuestContainer(tmt.Guest):
         else:
             script += command
 
+        # Force the use of a pseudo-terminal if requested or when running
+        # a test. Without it, processes spawned by the test session would
+        # keep running after `podman exec` completes, e.g. in the case of
+        # a timeout.
+        if test_session or tty or interactive:
+            podman_command += ['-t']
+
         # Run in interactive mode if requested
         if interactive:
-            podman_command += ['-it']
-
-        # Run with a `tty` if requested
-        elif tty:
-            podman_command += ['-t']
+            podman_command += ['-i']
 
         podman_command += [
             self.container or 'dry',
@@ -452,7 +537,7 @@ class GuestContainer(tmt.Guest):
         # work as expected
         return self.podman(
             podman_command,
-            log=log if log else self._command_verbose_logger,
+            log=log or self._command_verbose_logger,
             friendly_command=friendly_command or str(command),
             silent=silent,
             interactive=interactive,

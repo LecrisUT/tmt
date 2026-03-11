@@ -1,4 +1,3 @@
-import tmt
 import tmt.steps
 import tmt.steps.finish
 from tmt.steps.prepare.shell import PrepareShell
@@ -11,7 +10,7 @@ class FinishShell(tmt.steps.finish.FinishPlugin[tmt.steps.finish.FinishStepData]
 
     Execute arbitrary shell commands to finish the testing.
     Default shell options are applied to the script, see the
-    :ref:`/spec/tests/test` key specification for more
+    :tmt:story:`/spec/tests/test` key specification for more
     details.
 
     Example config:
@@ -38,7 +37,7 @@ class FinishShell(tmt.steps.finish.FinishPlugin[tmt.steps.finish.FinishStepData]
             ref: main
             script: cd $TMT_FINISH_SHELL_URL_REPOSITORY && make docs
 
-    Use the :ref:`/spec/core/order` attribute to select in which order
+    Use the :tmt:story:`/spec/core/order` attribute to select in which order
     finishing tasks should happen if there are multiple configs. Default
     order is ``50``.
     """

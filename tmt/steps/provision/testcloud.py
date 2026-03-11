@@ -4,7 +4,6 @@ import itertools
 import os
 import platform
 import re
-import shlex
 import shutil
 import tempfile
 import threading
@@ -14,7 +13,6 @@ from string import Template
 from typing import TYPE_CHECKING, Any, Optional, Union, cast
 
 import click
-import pint
 import requests
 
 import tmt
@@ -25,10 +23,9 @@ import tmt.steps.provision
 import tmt.utils
 import tmt.utils.wait
 from tmt.container import container, field
-from tmt.steps.provision import CONNECT_TIMEOUT, RebootMode, default_connect_waiting
+from tmt.guest import CONNECT_TIMEOUT, RebootMode, default_connect_waiting
 from tmt.utils import (
     Command,
-    GuestLogError,
     Path,
     ProvisionError,
     ShellScript,
@@ -38,7 +35,7 @@ from tmt.utils import (
 from tmt.utils.wait import Deadline, Waiting
 
 if TYPE_CHECKING:
-    import tmt.base
+    import tmt.base.core
     from tmt.hardware import Size
 
 
@@ -214,6 +211,9 @@ TPM_VERSION_SUPPORTED_VERSIONS = {
     False: ['2.0', '2'],
 }
 
+#: Boot methods supported by the plugin.
+BOOT_METHOD_SUPPORTED_METHODS: tuple[str, ...] = ('bios', 'uefi')
+
 #: Image url fetch retry attempts and interval
 IMAGE_URL_FETCH_RETRY_ATTEMPTS = 5
 IMAGE_URL_FETCH_RETRY_INTERVAL = 5
@@ -308,11 +308,23 @@ def _report_hw_requirement_support(constraint: tmt.hardware.Constraint) -> bool:
     ):
         return True
 
+    if (
+        components.name == 'boot'
+        and components.child_name == 'method'
+        and constraint.value in BOOT_METHOD_SUPPORTED_METHODS
+        and constraint.operator
+        in (
+            tmt.hardware.Operator.CONTAINS,
+            tmt.hardware.Operator.NOTCONTAINS_EXCLUSIVE,
+        )
+    ):
+        return True
+
     return False
 
 
 @container
-class TestcloudGuestData(tmt.steps.provision.GuestSshData):
+class TestcloudGuestData(tmt.guest.GuestSshData):
     image: str = field(
         default=DEFAULT_IMAGE,
         option=('-i', '--image'),
@@ -329,9 +341,9 @@ class TestcloudGuestData(tmt.steps.provision.GuestSshData):
         help='Set available memory in MB, 2048 MB by default.',
         normalize=normalize_memory_size,
         serialize=lambda value: str(value) if value is not None else None,
-        unserialize=lambda serialized: tmt.hardware.UNITS(serialized)
-        if serialized is not None
-        else None,
+        unserialize=lambda serialized: (
+            tmt.hardware.UNITS(serialized) if serialized is not None else None
+        ),
     )
     disk: Optional['Size'] = field(
         default=cast(Optional['Size'], None),
@@ -340,9 +352,9 @@ class TestcloudGuestData(tmt.steps.provision.GuestSshData):
         help='Specify disk size in GB, 10 GB by default.',
         normalize=normalize_disk_size,
         serialize=lambda value: str(value) if value is not None else None,
-        unserialize=lambda serialized: tmt.hardware.UNITS(serialized)
-        if serialized is not None
-        else None,
+        unserialize=lambda serialized: (
+            tmt.hardware.UNITS(serialized) if serialized is not None else None
+        ),
     )
     connection: str = field(
         default=DEFAULT_CONNECTION,
@@ -466,6 +478,59 @@ def _apply_hw_tpm(
 
         else:
             domain.tpm_configuration = TPMConfiguration()
+
+
+def _get_hw_boot_method(
+    hardware: Optional[tmt.hardware.Hardware],
+    logger: tmt.log.Logger,
+) -> Optional[str]:
+    """
+    Get the ``boot.method`` constraint value from hardware requirements.
+
+    :returns: The boot method value ('bios' or 'uefi') if specified, None otherwise.
+    """
+
+    if not hardware or not hardware.constraint:
+        logger.debug('boot.method', "not included because of no constraints", level=4)
+
+        return None
+
+    variant = hardware.constraint.variant()
+
+    boot_method_constraints = [
+        constraint
+        for constraint in variant
+        if isinstance(constraint, tmt.hardware.TextConstraint)
+        and constraint.expand_name().name == 'boot'
+        and constraint.expand_name().child_name == 'method'
+    ]
+
+    if not boot_method_constraints:
+        logger.debug(
+            'boot.method', "not included because of no 'boot.method' constraints", level=4
+        )
+
+        return None
+
+    for constraint in boot_method_constraints:
+        if constraint.value not in BOOT_METHOD_SUPPORTED_METHODS:
+            logger.warning(
+                f"Cannot apply hardware requirement '{constraint}', "
+                f"boot method '{constraint.value}' is not supported."
+            )
+
+            return None
+
+        boot_method = constraint.value
+
+        if constraint.operator == tmt.hardware.Operator.NOTCONTAINS_EXCLUSIVE:
+            boot_method = 'bios' if boot_method == 'uefi' else 'uefi'
+
+        logger.debug('boot.method', f"set to '{boot_method}' because of '{constraint}'", level=4)
+
+        return boot_method
+
+    return None
 
 
 def _apply_hw_disk_size(
@@ -803,7 +868,12 @@ class GuestTestcloud(tmt.GuestSsh):
             raise ProvisionError(f"The instance name '{self.instance_name}' is invalid.")
 
         self._domain = DomainConfiguration(self.instance_name)
-        self._apply_hw_arch(self._domain, self.is_kvm, self.is_legacy_os)
+        self._apply_hw_arch(
+            self._domain,
+            self.is_kvm,
+            self.is_legacy_os,
+            boot_method=_get_hw_boot_method(self.hardware, self._logger),
+        )
 
         # Is this a CoreOS?
         self._domain.coreos = self.is_coreos
@@ -948,11 +1018,19 @@ class GuestTestcloud(tmt.GuestSsh):
 
             domain.memory_size = int(constraint.value.to('kB').magnitude)
 
-    def _apply_hw_arch(self, domain: 'DomainConfiguration', kvm: bool, legacy_os: bool) -> None:
+    def _apply_hw_arch(
+        self,
+        domain: 'DomainConfiguration',
+        kvm: bool,
+        legacy_os: bool,
+        boot_method: Optional[str] = None,
+    ) -> None:
+        uefi = boot_method == 'uefi'
+
         if self.arch == "x86_64":
             domain.system_architecture = X86_64ArchitectureConfiguration(
                 kvm=kvm,
-                uefi=False,  # Configurable
+                uefi=uefi,  # Configurable
                 model="q35" if not legacy_os else "pc",
             )
         elif self.arch == "aarch64":
@@ -961,18 +1039,33 @@ class GuestTestcloud(tmt.GuestSsh):
                 uefi=True,  # Always enabled
                 model="virt",
             )
+            if boot_method and not uefi:
+                self.warn(
+                    "The aarch64 architecture requires 'uefi' boot, "
+                    "using 'uefi' boot method instead."
+                )
         elif self.arch == "ppc64le":
             domain.system_architecture = Ppc64leArchitectureConfiguration(
                 kvm=kvm,
                 uefi=False,  # Always disabled
                 model="pseries",
             )
+            if boot_method and uefi:
+                self.warn(
+                    "The ppc64le architecture does not support 'uefi' boot, "
+                    "using 'bios' boot method instead."
+                )
         elif self.arch == "s390x":
             domain.system_architecture = S390xArchitectureConfiguration(
                 kvm=kvm,
                 uefi=False,  # Always disabled
                 model="s390-ccw-virtio",
             )
+            if boot_method and uefi:
+                self.warn(
+                    "The s390x architecture does not support 'uefi' boot, "
+                    "using 'bios' boot method instead."
+                )
         else:
             raise tmt.utils.ProvisionError("Unknown architecture requested.")
 
@@ -985,16 +1078,11 @@ class GuestTestcloud(tmt.GuestSsh):
             return
 
         # Prepare the console log
-        assert self.logdir is not None  # Narrow type
-        console_log = ConsoleLog(
-            name=CONSOLE_LOG_FILE,
-            testcloud_symlink_path=self.logdir / f'{CONSOLE_LOG_FILE}.link',
-            guest=self,
-        )
+        console_log = ConsoleLog(name=CONSOLE_LOG_FILE, guest=self)
 
-        self.collect_log(console_log, hint=f'following {console_log.testcloud_symlink_path}')
+        self.collect_log(console_log, hint=f'following {console_log.filepath}')
 
-        self.setup_logs(self._logger)
+        self.setup_logs(logger=self._logger)
 
         # Prepare config
         self.prepare_config()
@@ -1016,7 +1104,7 @@ class GuestTestcloud(tmt.GuestSsh):
             image_path = Path(self.image_url.removeprefix("file://"))
             # We should not symlink any supported formats, e.g. the `.xz`
             # does an extract step that would be skip if we make the symlink.
-            if image_path.suffixes and image_path.suffixes[-1] in (".qcow2",):
+            if image_path.suffixes and image_path.suffixes[-1] == ".qcow2":
                 # Create a symlink in the testcloud STORE_DIR and make sure
                 # it is always updated to the requested version.
                 image_symlink = self.testcloud_image_dirpath / image_path.name
@@ -1050,7 +1138,7 @@ class GuestTestcloud(tmt.GuestSsh):
 
         # Prepare DomainConfiguration object before Instance object
         self._domain = DomainConfiguration(self.instance_name)
-        self._domain.console_log_file = console_log.testcloud_symlink_path
+        self._domain.console_log_file = console_log.filepath
 
         # Prepare Workarounds object
         self._workarounds = Workarounds(defaults=True)
@@ -1093,7 +1181,12 @@ class GuestTestcloud(tmt.GuestSsh):
         # Is this a CoreOS?
         self._domain.coreos = self.is_coreos
 
-        self._apply_hw_arch(self._domain, self.is_kvm, self.is_legacy_os)
+        self._apply_hw_arch(
+            self._domain,
+            self.is_kvm,
+            self.is_legacy_os,
+            boot_method=_get_hw_boot_method(self.hardware, self._logger),
+        )
 
         mac_address = testcloud.util.generate_mac_address()
         if f"qemu:///{self.connection}" == "qemu:///system":
@@ -1205,7 +1298,7 @@ class GuestTestcloud(tmt.GuestSsh):
         if self._instance is None:
             raise tmt.utils.ProvisionError("No instance initialized.")
 
-        waiting = waiting or tmt.steps.provision.default_reboot_waiting()
+        waiting = waiting or tmt.guest.default_reboot_waiting()
 
         if mode == RebootMode.HARD:
             self.debug("Hard reboot using the testcloud API.")
@@ -1428,7 +1521,7 @@ class ProvisionTestcloud(tmt.steps.provision.ProvisionPlugin[ProvisionTestcloudD
             click.echo(f"{store_dir / filename}")
 
     @classmethod
-    def clean_images(cls, clean: 'tmt.base.Clean', dry: bool, workdir_root: Path) -> bool:
+    def clean_images(cls, clean: 'tmt.base.core.Clean', dry: bool, workdir_root: Path) -> bool:
         """
         Remove the testcloud images
         """
@@ -1453,15 +1546,11 @@ class ProvisionTestcloud(tmt.steps.provision.ProvisionPlugin[ProvisionTestcloudD
 
 
 @container
-class ConsoleLog(tmt.steps.provision.GuestLog):
-    #: Path where :py:mod:`testcloud`` will create the symlink to the
-    #: console log. This is the log path as known to tmt.
-    testcloud_symlink_path: Path
-
+class ConsoleLog(tmt.guest.GuestLog):
     #: Temporary directory for storing the console log content.
     exchange_directory: Optional[Path] = None
 
-    def setup(self, logger: tmt.log.Logger) -> None:
+    def setup(self, *, logger: tmt.log.Logger) -> None:
         # Prepare the exchange directory for testcloud/tmt console log transport.
         self.exchange_directory = Path(tempfile.mkdtemp(prefix="testcloud-"))
         logger.debug(f"Created log exchange directory '{self.exchange_directory}'.", level=3)
@@ -1481,17 +1570,30 @@ class ConsoleLog(tmt.steps.provision.GuestLog):
                 Command("chcon", "--type", "virt_log_t", self.exchange_directory), silent=True
             )
 
-    def teardown(self, logger: tmt.log.Logger) -> None:
+    def teardown(self, *, logger: tmt.log.Logger) -> None:
         if self.exchange_directory is None:
             return
 
+        # Replace the console symlink with the source file, in place.
+        try:
+            with self.staging_file(self.filepath, logger) as staging_filepath:
+                # We cannot use simple "cp" as we are dealing with symlinks,
+                # we need the content of the file, not the file it points to.
+                shutil.copyfile(self.filepath, staging_filepath, follow_symlinks=True)
+
+        except Exception as error:
+            tmt.utils.show_exception_as_warning(
+                exception=error,
+                message="Failed to save console log.",
+                logger=logger,
+            )
+
+        # And remove the exchange directory.
         try:
             logger.debug(f"Remove log exchange directory '{self.exchange_directory}'.", level=3)
 
             shutil.rmtree(self.exchange_directory)
             self.exchange_directory = None
-
-            self.testcloud_symlink_path.unlink(missing_ok=True)
 
         except OSError as error:
             tmt.utils.show_exception_as_warning(
@@ -1500,8 +1602,7 @@ class ConsoleLog(tmt.steps.provision.GuestLog):
                 logger=logger,
             )
 
-    def update(self, filepath: Path, logger: tmt.log.Logger) -> None:
-        with self.staging_file(filepath, logger) as staging_filepath:
-            # We cannot use simple "cp" as we are dealing with symlinks,
-            # we need the content of the file, not the file it points to.
-            shutil.copyfile(self.testcloud_symlink_path, staging_filepath, follow_symlinks=True)
+    def update(self, *, logger: tmt.log.Logger) -> None:
+        # Nothing to do to update our filepath, it's a symlink to
+        # the real log, it's up-to-date all the time.
+        pass

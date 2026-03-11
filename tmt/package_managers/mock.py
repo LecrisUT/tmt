@@ -8,6 +8,7 @@ from tmt.package_managers import (
     Options,
     PackageManager,
     PackageManagerEngine,
+    PackagePath,
     escape_installables,
     provides_package_manager,
 )
@@ -83,6 +84,13 @@ class MockEngine(PackageManagerEngine):
 
 
 class _MockPackageManager(PackageManager[MockEngine]):
+    """
+    Base class implementing the package manager for mock-provisioned guests.
+    Note:
+    * self.guest.run - execute a command *on the host*.
+    * self.guest.execute - execute a command *in the mock shell*.
+    """
+
     probe_command = Command('/usr/bin/false')
     probe_priority = 130
     _engine_class = MockEngine
@@ -170,23 +178,42 @@ class _MockPackageManager(PackageManager[MockEngine]):
     def refresh_metadata(self) -> CommandOutput:
         return self.guest.run(self.engine.refresh_metadata().to_shell_command())
 
+    def install_local(
+        self,
+        *installables: Installable,
+        options: Optional[Options] = None,
+    ) -> CommandOutput:
 
-# ignore[type-arg]: TypeVar in package manager registry annotations is
-# puzzling for type checkers. And not a good idea in general, probably.
-@provides_package_manager('mock-yum')  # type: ignore[arg-type]
+        assert isinstance(self.guest, GuestMock)
+
+        options = options or Options()
+        options.check_first = False
+
+        # mock's package manager mounts the buildroot directory, so we need to
+        # prefix the path with the guest's root_path.
+        filelist = [
+            PackagePath(self.guest.root_path / p.relative_to('/'))
+            for p in installables
+            if isinstance(p, PackagePath)
+        ]
+
+        # Use both install/reinstall to get all packages refreshed
+        # FIXME Simplify this once BZ#1831022 is fixed/implemented.
+        output = self.install(*filelist, options=options)
+        self.reinstall(*filelist, options=options)
+        return output
+
+
+@provides_package_manager('mock-yum')
 class MockYum(_MockPackageManager):
     NAME = 'mock-yum'
 
 
-# ignore[type-arg]: TypeVar in package manager registry annotations is
-# puzzling for type checkers. And not a good idea in general, probably.
-@provides_package_manager('mock-dnf')  # type: ignore[arg-type]
+@provides_package_manager('mock-dnf')
 class MockDnf(_MockPackageManager):
     NAME = 'mock-dnf'
 
 
-# ignore[type-arg]: TypeVar in package manager registry annotations is
-# puzzling for type checkers. And not a good idea in general, probably.
-@provides_package_manager('mock-dnf5')  # type: ignore[arg-type]
+@provides_package_manager('mock-dnf5')
 class MockDnf5(_MockPackageManager):
     NAME = 'mock-dnf5'
