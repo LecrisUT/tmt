@@ -328,11 +328,6 @@ class ReportPolarion(tmt.steps.report.ReportPlugin[ReportPolarionData]):
                 "environment variable."
             )
 
-        # TODO: try use self.data instead - but these fields are not optional, they do have
-        # default values, do envvars even have any effect at all??
-        upload = self.get('upload', os.getenv('TMT_PLUGIN_REPORT_POLARION_UPLOAD'))
-        use_facts = self.get('use-facts', os.getenv('TMT_PLUGIN_REPORT_POLARION_USE_FACTS'))
-
         # Mapping from field names to Polarion API field names
         polarion_field_mapping = {
             'test_cycle': 'scheduleTask',
@@ -367,7 +362,7 @@ class ReportPolarion(tmt.steps.report.ReportPlugin[ReportPolarionData]):
                 )
                 testsuites_properties[f"polarion-custom-{polarion_field_name}"] = param
 
-        if use_facts:
+        if self.data.use_facts:
             guests = self.step.plan.provision.ready_guests
             try:
                 testsuites_properties['polarion-custom-hostname'] = guests[0].primary_address
@@ -450,7 +445,7 @@ class ReportPolarion(tmt.steps.report.ReportPlugin[ReportPolarionData]):
         except Exception as error:
             raise tmt.utils.ReportError(f"Failed to write the output '{f_path}'.") from error
 
-        if upload:
+        if self.data.upload:
             server_url = str(PolarionWorkItem._session._server.url)
             polarion_import_url = (
                 f'{server_url}{"" if server_url.endswith("/") else "/"}import/xunit'

@@ -35,13 +35,13 @@ PROPAGATE_TO_DISCOVER_KEYS = ['url', 'ref', 'filter', 'test', 'exclude', 'upgrad
 @container
 class ExecuteUpgradeData(ExecuteInternalData):
     url: Optional[str] = field(
-        default=cast(Optional[str], None),
+        default=None,
         option=('-u', '--url'),
         metavar='REPOSITORY',
         help='URL of the git repository with upgrade tasks.',
     )
     upgrade_path: Optional[str] = field(
-        default=cast(Optional[str], None),
+        default=None,
         option=('-p', '--upgrade-path'),
         metavar='PLAN_NAME',
         help='Upgrade path corresponding to a plan name in the repository with upgrade tasks.',
@@ -291,8 +291,7 @@ class ExecuteUpgrade(ExecuteInternal):
         # Inform about the how, skip the actual execution
         ExecutePlugin.go(self, guest=guest, environment=environment, logger=logger)
 
-        self.url = self.get('url')
-        self.upgrade_path = self.get('upgrade-path')
+        self.url = self.data.url
         for key in self._keys:
             value = self.get(key)
             if value:
@@ -328,18 +327,20 @@ class ExecuteUpgrade(ExecuteInternal):
         Get plan based on upgrade path
         """
 
+        assert self.data.upgrade_path is not None  # narrow type
+
         tree = tmt.base.core.Tree(logger=self._logger, path=upgrades_repo)
         try:
             # We do not want to consider plan -n provided on the command line
             # in the remote repo for finding upgrade path.
             tmt.base.plan.Plan.ignore_class_options = True
-            plans = tree.plans(names=[self.upgrade_path])
+            plans = tree.plans(names=[self.data.upgrade_path])
         finally:
             tmt.base.plan.Plan.ignore_class_options = False
 
         if len(plans) == 0:
             raise tmt.utils.ExecuteError(
-                f"No matching upgrade path found for '{self.upgrade_path}'."
+                f"No matching upgrade path found for '{self.data.upgrade_path}'."
             )
         if len(plans) > 1:
             names = [plan.name for plan in plans]
@@ -459,7 +460,7 @@ class ExecuteUpgrade(ExecuteInternal):
             self._fetch_upgrade_tasks()
             extra_environment = None
             assert self._discover_upgrade is not None
-            if self.upgrade_path:
+            if self.data.upgrade_path:
                 # Create a fake discover from the data in the upgrade path
                 plan = self._get_plan(self._discover_upgrade.test_dir)
                 data = self._prepare_remote_discover_data(plan)

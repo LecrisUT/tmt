@@ -387,7 +387,8 @@ class DiscoverPlugin(tmt.steps.GuestlessPlugin[DiscoverStepDataT, None]):
             )
 
         # Save upgrade plan
-        upgrade_path = self.get('upgrade-path')
+        # TODO: This is not properly type verified
+        upgrade_path = self.data.upgrade_path if hasattr(self.data, "upgrade_path") else None
         if upgrade_path:
             upgrade_path = f"{upgrade_path.lstrip('/')}.fmf"
             (clone_tree_path / upgrade_path).parent.mkdir(parents=True, exist_ok=True)
@@ -671,7 +672,8 @@ class Discover(tmt.steps.Step):
         else:
             phase.go(path=path, logger=logger)
 
-        if phase.get('prune', False):
+        # TODO: This is not properly type verified
+        if hasattr(phase.data, "prune") and phase.data.prune:
             clone_dir = phase.clone_dirpath / 'tests'
             phase.install_libraries(phase.test_dir, clone_dir)
             phase.prune_tree(clone_dir, path)

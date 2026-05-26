@@ -2266,7 +2266,7 @@ class BasePlugin(
         # Step name (and optional summary)
         echo(
             tmt.utils.format(
-                self.step.name, self.get('summary') or '', key_color='blue', value_color='blue'
+                self.step.name, self.data.summary or '', key_color='blue', value_color='blue'
             )
         )
         # Show all or requested step attributes
@@ -2330,11 +2330,10 @@ class BasePlugin(
         """
 
         fmf_context = fmf.context.Context(**self.step.plan.fmf_context)
-        when_rules = self.get('when', [])
-        if not when_rules:
+        if not self.data.when:
             # No 'when' -> enabled everywhere
             return True
-        for when in when_rules:
+        for when in self.data.when:
             with suppress(fmf.context.CannotDecide):
                 if fmf_context.matches(when):
                     return True
@@ -2346,13 +2345,13 @@ class BasePlugin(
         Check if the plugin is enabled on the specific guest
         """
 
-        # FIXME: cast() - typeless "dispatcher" method
-        where = cast(list[str], self.get('where'))
-
-        if not where:
+        if not isinstance(self.data, WhereableStepData):
             return True
 
-        return any(destination in (guest.name, guest.role) for destination in where)
+        if not self.data.where:
+            return True
+
+        return any(destination in (guest.name, guest.role) for destination in self.data.where)
 
     def wake(self) -> None:
         """
@@ -2402,10 +2401,10 @@ class BasePlugin(
         logger = logger or self._logger
 
         # Show the method
-        logger.info('how', self.get('how'), 'magenta')
+        logger.info('how', self.data.how, 'magenta')
         # Give summary if provided
-        if self.get('summary'):
-            logger.info('summary', self.get('summary'), 'magenta')
+        if self.data.summary:
+            logger.info('summary', self.data.summary, 'magenta')
         # Show name only if it's not the default one
         if not self.name.startswith(tmt.utils.DEFAULT_NAME):
             logger.info('name', self.name, 'magenta')

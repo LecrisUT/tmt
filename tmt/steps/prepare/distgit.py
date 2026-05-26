@@ -93,8 +93,8 @@ def insert_to_prepare_step(
             where=where,
             source_dir=sourcedir,
             phase_name=discover_plugin.name,
-            install_builddeps=discover_plugin.get('dist-git-install-builddeps'),
-            require=discover_plugin.get('dist-git-require'),
+            install_builddeps=discover_plugin.data.dist_git_install_builddeps,
+            require=discover_plugin.data.dist_git_require,
             how='distgit',
             name="Prepare dist-git sources (buildrequires, patches, discovery...)",
         ),
@@ -196,7 +196,7 @@ class PrepareDistGit(tmt.steps.prepare.PreparePlugin[DistGitData]):
         environment = environment or tmt.utils.Environment()
 
         # Packages required for this plugin to work and additional required packages
-        explicit_requires = [Package(p) for p in self.get('require', [])] + [Package('rpm-build')]
+        explicit_requires = [Package(p) for p in self.data.require] + [Package('rpm-build')]
 
         # Packages assumed to be present when building packages
         guest_distro = guest.facts.distro.lower() if guest.facts.distro else ""
@@ -205,7 +205,7 @@ class PrepareDistGit(tmt.steps.prepare.PreparePlugin[DistGitData]):
         elif "red hat" in guest_distro:
             explicit_requires += RHEL_BUILD_REQUIRES
 
-        if self.get('install_builddeps'):
+        if self.data.install_builddeps:
             # FIXME For now dnf only, ideally it will be capability of the package_manager...
             if "dnf" not in (guest.facts.package_manager or ''):
                 raise tmt.utils.PrepareError("Cannot install build deps on system without dnf yet")
@@ -234,7 +234,7 @@ class PrepareDistGit(tmt.steps.prepare.PreparePlugin[DistGitData]):
             f'_srcrpmdir {source_dir}/SRPMS',
         ]
 
-        if self.get('install_builddeps'):
+        if self.data.install_builddeps:
             cmd = Command("rpmbuild", "-br", "--nodeps", spec_name, *dir_defines)
             try:
                 stdout = guest.execute(command=cmd, cwd=source_dir).stdout
