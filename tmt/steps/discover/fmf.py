@@ -1,4 +1,3 @@
-import glob
 import re
 import shutil
 from typing import Any, Optional, TypedDict, Union, cast
@@ -98,8 +97,8 @@ def normalize_tests_with_adjusts(
 
 @container
 class DiscoverFmfStepData(tmt.steps.discover.DiscoverStepData):
-    path: Optional[str] = field(
-        default=cast(Optional[str], None),
+    path: Optional[Path] = field(
+        default=None,
         option=('-p', '--path'),
         metavar='ROOT',
         help="""
@@ -107,6 +106,8 @@ class DiscoverFmfStepData(tmt.steps.discover.DiscoverStepData):
             the git repository root if ``url`` was provided, absolute
             local filesystem path otherwise. By default ``.`` is used.
             """,
+        normalize=tmt.utils.normalize_path,
+        exporter=lambda value: str(value) if isinstance(value, Path) else None,
     )
 
     # Selecting tests
@@ -198,7 +199,7 @@ class DiscoverFmfStepData(tmt.steps.discover.DiscoverStepData):
     )
 
     modified_url: Optional[str] = field(
-        default=cast(Optional[str], None),
+        default=None,
         option='--modified-url',
         metavar='REPOSITORY',
         help="""
@@ -209,7 +210,7 @@ class DiscoverFmfStepData(tmt.steps.discover.DiscoverStepData):
     )
 
     modified_ref: Optional[str] = field(
-        default=cast(Optional[str], None),
+        default=None,
         option='--modified-ref',
         metavar='REVISION',
         help="""
@@ -252,7 +253,7 @@ class DiscoverFmfStepData(tmt.steps.discover.DiscoverStepData):
             """,
     )
     dist_git_extract: Optional[str] = field(
-        default=cast(Optional[str], None),
+        default=None,
         option='--dist-git-extract',
         help="""
              What to copy from extracted sources, globbing is supported. Defaults to the top fmf
@@ -649,15 +650,13 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
 
         super().go(path=path, logger=logger)
 
-        dist_git_source = self.get('dist-git-source', False)
-
         # No tests are selected in some cases
         self._tests: list[tmt.Test] = []
 
         self.log_import_plan_details()
 
         # Dist-git source processing during discover step
-        if dist_git_source:
+        if self.data.dist_git_source:
             try:
                 if self.data.url:
                     fmf_root = self.test_dir
@@ -687,7 +686,7 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
         self.download_distgit_source(
             distgit_dir=distgit_dir,
             target_dir=self.source_dir,
-            handler_name=self.get('dist-git-type'),
+            handler_name=self.data.dist_git_type,
         )
 
         # Copy rest of files so TMT_SOURCE_DIR has patches, sources and spec file
@@ -698,7 +697,7 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
         )
 
         # patch & rediscover will happen later in the prepare step
-        if not self.get('dist-git-download-only'):
+        if not self.data.dist_git_download_only:
             # Check if prepare is enabled, warn user if not
             if not self.step.plan.prepare.enabled:
                 self.warn("Sources will not be extracted, prepare step is not enabled.")
@@ -724,7 +723,7 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
 
         # Show filters and test names if provided
         # Check the 'test --filter' option first, then from discover
-        filters = list(tmt.base.core.Test._opt('filters') or self.get('filter', []))
+        filters = list(tmt.base.core.Test._opt('filters') or self.data.filter)
         for filter_ in filters:
             self.info('filter', filter_, 'green')
         # Names of tests selected by --test option
@@ -733,7 +732,7 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
 
         # Check the 'test --link' option first, then from discover
         # FIXME: cast() - typeless "dispatcher" method
-        raw_link_needles = cast(list[str], tmt.Test._opt('links', []) or self.get('link', []))
+        raw_link_needles = tmt.Test._opt('links', []) or self.data.link
         link_needles = [
             tmt.base.core.LinkNeedle.from_spec(raw_needle) for raw_needle in raw_link_needles
         ]
@@ -745,8 +744,8 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
         includes = list(tmt.base.core.Test._opt('include') or self.data.include)
 
         # Filter only modified tests if requested
-        modified_only = self.get('modified-only')
-        modified_url = self.get('modified-url')
+        modified_only = self.data.modified_only
+        modified_url = self.data.modified_url
         if modified_url:
             previous = modified_url
             modified_url = tmt.utils.git.clonable_git_url(modified_url)
@@ -763,9 +762,8 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
                 cwd=self.test_dir,
             )
         if modified_only:
-            modified_ref = self.get(
-                'modified-ref',
-                tmt.utils.git.default_branch(repository=self.test_dir, logger=self._logger),
+            modified_ref = self.data.modified_ref or tmt.utils.git.default_branch(
+                repository=self.test_dir, logger=self._logger
             )
             self.info('modified-ref', modified_ref, 'green')
             ref_commit = self.run(
@@ -853,33 +851,26 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
         Discover tests after dist-git applied patches
         """
 
-        # Directory to copy out from sources
-        dist_git_extract = self.get('dist-git-extract', None)
-        dist_git_init = self.get('dist-git-init', False)
-        dist_git_merge = self.get('dist-git-merge', False)
-        dist_git_remove_fmf_root = self.get('dist-git-remove-fmf-root', False)
-
         # '/' means everything which was extracted from the srpm and do not flatten
         # glob otherwise
-        if dist_git_extract and dist_git_extract != '/':
+        if self.data.dist_git_extract and self.data.dist_git_extract != '/':
             try:
-                dist_git_extract = Path(
-                    glob.glob(str(self.source_dir / dist_git_extract.lstrip('/')))[0]
+                # TODO: Refine the handling here, why do we glob and take only the first one
+                dist_git_extract = next(
+                    self.source_dir.glob(self.data.dist_git_extract.lstrip('/'))
                 )
-            except IndexError as error:
+            except StopIteration as error:
                 raise tmt.utils.DiscoverError(
                     f"Couldn't glob '{dist_git_extract}' within extracted sources."
                 ) from error
-        if dist_git_init:
-            if dist_git_extract == '/' or not dist_git_extract:
-                dist_git_extract = '/'
-                location = self.source_dir
-            else:
-                location = dist_git_extract
+        else:
+            dist_git_extract = Path(self.data.dist_git_extract or "/")
+        if self.data.dist_git_init:
+            location = self.source_dir if dist_git_extract == Path('/') else dist_git_extract
             # User specified location or 'root' of extracted sources
             if not (Path(location) / '.fmf').is_dir() and not self.is_dry_run:
                 fmf.Tree.init(location)
-        elif dist_git_remove_fmf_root:
+        elif self.data.dist_git_remove_fmf_root:
             try:
                 extracted_fmf_root = tmt.utils.find_fmf_root(
                     self.source_dir,
@@ -895,8 +886,8 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
                     self.source_dir, ignore_paths=[self.source_dir]
                 )[0]
             except tmt.utils.MetadataError as error:
-                dist_git_extract = '/'  # Copy all extracted files as well (but later)
-                if not dist_git_merge:
+                dist_git_extract = Path('/')  # Copy all extracted files as well (but later)
+                if not self.data.dist_git_merge:
                     self.warn(
                         "Extracted sources do not contain fmf root, "
                         "merging with plan data. Avoid this warning by "
@@ -917,7 +908,7 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
         # Copy extracted sources into test_dir
         if not self.is_dry_run:
             flatten = True
-            if dist_git_extract == '/':
+            if dist_git_extract == Path('/'):
                 flatten = False
                 copy_these = created_content
             elif dist_git_extract:
@@ -935,8 +926,9 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
                 else:
                     shutil.copyfile(src, self.test_dir / to_copy)
 
-        path = Path(cast(str, self.get('path'))) if self.get('path') else None
+        path = self.data.path
         # Adjust path and optionally show
+        # TODO: Figure out what this was trying to do
         if path is None or path.resolve() == Path.cwd().resolve():
             path = Path('')
         else:
@@ -945,7 +937,7 @@ class DiscoverFmf(tmt.steps.discover.DiscoverPlugin[DiscoverFmfStepData]):
         # Discover tests
         self._tests = self.do_the_discovery(path)
 
-        if self.get('prune', False):
+        if self.data.prune:
             clone_dir = self.clone_dirpath / 'tests'
             self.install_libraries(self.test_dir, clone_dir)
             self.prune_tree(clone_dir, path)

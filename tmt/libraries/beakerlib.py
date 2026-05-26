@@ -168,7 +168,7 @@ class BeakerLib(Library):
         assert isinstance(parent, DiscoverPlugin)  # narrow type
         assert isinstance(parent.data, DiscoverStepData)  # narrow type
 
-        fmf_path = "."
+        fmf_path = Path(".")
         # When using `path` with `url`, it behaves differently from local `path`
         # TODO: Remove this special handling when DiscoverFmf is more consistent
         if isinstance(parent.data, DiscoverFmfStepData) and parent.data.url and parent.data.path:
