@@ -45,6 +45,7 @@ import tmt.steps.context
 import tmt.utils
 import tmt.utils.rest
 from tmt._compat.typing import Self, TypeGuard
+from tmt._compat.warnings import deprecated
 from tmt.container import (
     SerializableContainer,
     SpecBasedContainer,
@@ -2208,6 +2209,7 @@ class BasePlugin(
 
         return value
 
+    @deprecated("Use `self.data.*` instead.")
     def get(self, option: str, default: Optional[Any] = None) -> Any:
         """
         Get option from plugin data, user/system config or defaults
