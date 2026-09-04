@@ -13,15 +13,15 @@ jobs:
       LOG_LEVEL: debug
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Get GitHub App token
         id: token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.RENOVATE_BOT_APP_ID }}
           private-key: ${{ secrets.RENOVATE_BOT_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-      - uses: renovatebot/github-action@v44.2.0
+      - uses: renovatebot/github-action@v46.2.5
         with:
           configurationFile: .github/renovate-config.json
           token: '${{ steps.token.outputs.token }}'
